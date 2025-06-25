@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Qualification Output Related Table Definitions"""
+
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -24,7 +26,7 @@ class QualCoreColumnDef:
     description: str
 
     def __str__(self) -> str:
-        return f"QualCoreColumnDef(name={self.name}, data_type={self.data_type})"
+        return f'QualCoreColumnDef(name={self.name}, data_type={self.data_type})'
 
 
 @dataclass
@@ -38,7 +40,12 @@ class QualCoreTableDef:
     file_format: Optional[str] = None  # Optional field, defaults to CSV if not specified
 
     def __str__(self) -> str:
-        return f"QualCoreTableDef(label={self.label}, file_name={self.file_name}, scope={self.scope}, columns={len(self.columns)})"
+        return (
+            f'QualCoreTableDef(label={self.label}, '
+            f'file_name={self.file_name}, '
+            f'scope={self.scope}, '
+            f'columns={len(self.columns)})'
+        )
 
     def get_column_by_name(self, name: str) -> Optional[QualCoreColumnDef]:
         """Get a column definition by name."""

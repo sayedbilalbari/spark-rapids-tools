@@ -12,60 +12,42 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import yaml
-from typing import List, Dict, Optional
+"""Qualification Output Related Table Loader"""
+
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Dict, List, Optional
 
-from .qual_table_definitions import QualCoreTableDef, QualCoreColumnDef
+from spark_rapids_pytools.common.prop_manager import YAMLPropertiesContainer
 from spark_rapids_pytools.common.utilities import Utils
+from .qual_table_definitions import QualCoreTableDef, QualCoreColumnDef
 
 
+@dataclass
 class QualCoreTableLoader:
-    """Loads qualification table definitions from YAML configuration."""
+    """Loads and manages qualification table definitions from YAML configuration files."""
+    yaml_file_path: Optional[str] = None
+    _table_definitions: Optional[List[QualCoreTableDef]] = None
 
-    def __init__(self, yaml_file_path: Optional[str] = None):
-        """
-        Initialize the loader with the YAML file path.
-
-        Args:
-            yaml_file_path: Path to the qualOutputTable.yaml file. If None,
-                          will look for it in the resources/core directory.
-        """
-        if yaml_file_path is None:
-            yaml_file_path = Utils.resource_path("core/qualOutputTable.yaml")
-
-        self.yaml_file_path = Path(yaml_file_path)
-        self._table_definitions: Optional[List[QualCoreTableDef]] = None
+    def __post_init__(self):
+        """Initialize the loader with proper yaml_file_path and convert to Path object."""
+        if self.yaml_file_path is None:
+            self.yaml_file_path = Utils.resource_path('core/generated_files/qualOutputTable.yaml')
+        self.yaml_file_path = Path(self.yaml_file_path)
 
     def load_table_definitions(self) -> List[QualCoreTableDef]:
-        """
-        Load table definitions from the YAML file.
-
-        Returns:
-            List of QualCoreTableDef objects
-
-        Raises:
-            FileNotFoundError: If the YAML file is not found
-            yaml.YAMLError: If the YAML file is malformed
-            ValueError: If the YAML structure is invalid
-        """
+        """Load table definitions from the YAML file."""
         if self._table_definitions is not None:
             return self._table_definitions
 
-        if not self.yaml_file_path.exists():
-            raise FileNotFoundError(f"YAML file not found: {self.yaml_file_path}")
+        yaml_container = YAMLPropertiesContainer(prop_arg=self.yaml_file_path)
+        qual_table_definitions = yaml_container.get_value('qualTableDefinitions')
 
-        try:
-            with open(self.yaml_file_path, 'r', encoding='utf-8') as file:
-                yaml_content = yaml.safe_load(file)
-        except yaml.YAMLError as e:
-            raise yaml.YAMLError(f"Error parsing YAML file {self.yaml_file_path}: {e}")
-
-        if not isinstance(yaml_content, dict) or 'qualTableDefinitions' not in yaml_content:
-            raise ValueError("YAML file must contain 'qualTableDefinitions' key")
+        if qual_table_definitions is None:
+            raise ValueError('YAML file must contain \'qualTableDefinitions\' key')
 
         table_definitions = []
-        for table_data in yaml_content['qualTableDefinitions']:
+        for table_data in qual_table_definitions:
             table_def = self._create_table_definition(table_data)
             table_definitions.append(table_def)
 
@@ -77,7 +59,7 @@ class QualCoreTableLoader:
         required_fields = ['label', 'description', 'fileName', 'scope', 'columns']
         for field in required_fields:
             if field not in table_data:
-                raise ValueError(f"Missing required field '{field}' in table definition")
+                raise ValueError(f'Missing required field \'{field}\' in table definition')
 
         columns = []
         for column_data in table_data['columns']:
@@ -86,7 +68,7 @@ class QualCoreTableLoader:
 
         return QualCoreTableDef(
             label=table_data['label'],
-            description=table_data['description'].strip() if table_data['description'] else "",
+            description=table_data['description'].strip() if table_data['description'] else '',
             file_name=table_data['fileName'],
             scope=table_data['scope'],
             columns=columns,
@@ -98,24 +80,16 @@ class QualCoreTableLoader:
         required_fields = ['name', 'dataType', 'description']
         for field in required_fields:
             if field not in column_data:
-                raise ValueError(f"Missing required field '{field}' in column definition")
+                raise ValueError(f'Missing required field \'{field}\' in column definition')
 
         return QualCoreColumnDef(
             name=column_data['name'],
             data_type=column_data['dataType'],
-            description=column_data['description'].strip() if column_data['description'] else ""
+            description=column_data['description'].strip() if column_data['description'] else ''
         )
 
     def get_table_by_label(self, label: str) -> Optional[QualCoreTableDef]:
-        """
-        Get a table definition by its label.
-
-        Args:
-            label: The label of the table to find
-
-        Returns:
-            QualCoreTableDef if found, None otherwise
-        """
+        """Get a table definition by its label."""
         tables = self.load_table_definitions()
         for table in tables:
             if table.label == label:
@@ -123,15 +97,7 @@ class QualCoreTableLoader:
         return None
 
     def get_table_by_filename(self, filename: str) -> Optional[QualCoreTableDef]:
-        """
-        Get a table definition by its filename.
-
-        Args:
-            filename: The filename of the table to find
-
-        Returns:
-            QualCoreTableDef if found, None otherwise
-        """
+        """Get a table definition by its filename."""
         tables = self.load_table_definitions()
         for table in tables:
             if table.file_name == filename:
@@ -139,15 +105,7 @@ class QualCoreTableLoader:
         return None
 
     def get_tables_by_scope(self, scope: str) -> List[QualCoreTableDef]:
-        """
-        Get all table definitions for a specific scope.
-
-        Args:
-            scope: The scope to filter by (e.g., 'global', 'per-app')
-
-        Returns:
-            List of QualCoreTableDef objects matching the scope
-        """
+        """Get all table definitions for a specific scope."""
         tables = self.load_table_definitions()
         return [table for table in tables if table.scope == scope]
 
