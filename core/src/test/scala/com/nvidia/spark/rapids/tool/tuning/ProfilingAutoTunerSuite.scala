@@ -34,7 +34,7 @@ import org.apache.spark.sql.rapids.tool.util.{FSUtils, PropertiesLoader, WebCraw
  */
 abstract class ProfilingAutoTunerSuiteBase extends BaseAutoTunerSuite {
 
-  val autoTunerConfigsProvider: AutoTunerConfigsProvider = ProfilingAutoTunerConfigsProvider
+  val autoTunerHelper: AutoTunerHelper = ProfilingAutoTunerHelper
   val profilingLogDir: String = ToolTestUtils.getTestResourcePath("spark-events-profiling")
 
   /**
@@ -100,7 +100,8 @@ abstract class ProfilingAutoTunerSuiteBase extends BaseAutoTunerSuite {
   protected def getGpuAppMockInfoProvider: AppInfoProviderMockTest = {
     getMockInfoProvider(0, Seq(0), Seq(0.0),
       mutable.Map("spark.rapids.sql.enabled" -> "true",
-        "spark.plugins" -> "com.nvidia.spark.AnotherPlugin, com.nvidia.spark.SQLPlugin"),
+        "spark.plugins" -> "com.nvidia.spark.AnotherPlugin, com.nvidia.spark.SQLPlugin",
+        "spark.executor.resource.gpu.amount" -> "1"),
       Some(testSparkVersion), Seq())
   }
 
@@ -159,8 +160,10 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
   test("verify 3.2.0+ auto conf setting") {
     val dataprocWorkerInfo = buildGpuWorkerInfoAsString(None, Some(32), Some("122880MiB"), Some(0))
     val infoProvider = getMockInfoProvider(0, Seq(0), Seq(0.0),
-      mutable.Map("spark.rapids.sql.enabled" -> "true",
-        "spark.plugins" -> "com.nvidia.spark.AnotherPlugin, com.nvidia.spark.SQLPlugin"),
+      mutable.Map(
+        "spark.rapids.sql.enabled" -> "true",
+        "spark.plugins" -> "com.nvidia.spark.AnotherPlugin, com.nvidia.spark.SQLPlugin",
+        "spark.executor.resource.gpu.amount" -> "1"),
       Some("3.2.0"), Seq())
     val clusterPropsOpt = PropertiesLoader[ClusterProperties].loadFromContent(dataprocWorkerInfo)
     val platform = PlatformFactory.createInstance(PlatformNames.DATAPROC, clusterPropsOpt)
@@ -219,8 +222,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.task.resource.gpu.amount' was not set.
           |- Number of workers is missing. Setting default to 1.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -228,7 +231,7 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
 
   test("Load non-existing cluster properties") {
     val platform = PlatformFactory.createInstance(clusterProperties = None)
-    val autoTuner = ProfilingAutoTunerConfigsProvider
+    val autoTuner = ProfilingAutoTunerHelper
       .buildAutoTuner(getGpuAppMockInfoProvider, platform)
     val (properties, comments) = autoTuner.getRecommendedProperties()
     val autoTunerOutput = Profiler.getAutoTunerResultsAsString(properties, comments)
@@ -244,18 +247,18 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |Comments:
           |- 'spark.executor.cores' should be set to 16.
           |- 'spark.executor.instances' should be set to (cpuCoresPerNode * numWorkers) / 'spark.executor.cores'.
-          |- 'spark.executor.memory' should be set to at least 2GB/core.
-          |- 'spark.rapids.memory.pinnedPool.size' should be set to 2048m.
+          |- 'spark.executor.memory' should be set to 2g/core.
+          |- 'spark.rapids.memory.pinnedPool.size' should be set to 2g.
           |- 'spark.rapids.sql.batchSizeBytes' was not set.
-          |- 'spark.rapids.sql.concurrentGpuTasks' should be set to Min(4, (gpuMemory / 7.5G)).
+          |- 'spark.rapids.sql.concurrentGpuTasks' should be set to Min(4, (gpuMemory / 7500m)).
           |- 'spark.rapids.sql.enabled' should be true to enable SQL operations on the GPU.
           |- 'spark.shuffle.manager' was not set.
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.task.resource.gpu.amount' should be set to 0.001.
           |- Could not infer the cluster configuration, recommendations are generated using default values!
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -278,18 +281,18 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |Comments:
           |- 'spark.executor.cores' should be set to 16.
           |- 'spark.executor.instances' should be set to (cpuCoresPerNode * numWorkers) / 'spark.executor.cores'.
-          |- 'spark.executor.memory' should be set to at least 2GB/core.
-          |- 'spark.rapids.memory.pinnedPool.size' should be set to 2048m.
+          |- 'spark.executor.memory' should be set to 2g/core.
+          |- 'spark.rapids.memory.pinnedPool.size' should be set to 2g.
           |- 'spark.rapids.sql.batchSizeBytes' was not set.
-          |- 'spark.rapids.sql.concurrentGpuTasks' should be set to Min(4, (gpuMemory / 7.5G)).
+          |- 'spark.rapids.sql.concurrentGpuTasks' should be set to Min(4, (gpuMemory / 7500m)).
           |- 'spark.rapids.sql.enabled' should be true to enable SQL operations on the GPU.
           |- 'spark.shuffle.manager' was not set.
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.task.resource.gpu.amount' should be set to 0.001.
           |- Could not infer the cluster configuration, recommendations are generated using default values!
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -338,11 +341,11 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.task.resource.gpu.amount' was not set.
-          |- ${ProfilingAutoTunerConfigsProvider.notEnoughMemCommentForKey("spark.executor.memory")}
-          |- ${ProfilingAutoTunerConfigsProvider.notEnoughMemCommentForKey("spark.rapids.memory.pinnedPool.size")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
-          |- ${ProfilingAutoTunerConfigsProvider.notEnoughMemComment(40140)}
+          |- ${notEnoughMemCommentForKey("spark.executor.memory")}
+          |- ${notEnoughMemCommentForKey("spark.rapids.memory.pinnedPool.size")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
+          |- ${notEnoughMemComment(40140)}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -365,18 +368,18 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |Comments:
           |- 'spark.executor.cores' should be set to 16.
           |- 'spark.executor.instances' should be set to (cpuCoresPerNode * numWorkers) / 'spark.executor.cores'.
-          |- 'spark.executor.memory' should be set to at least 2GB/core.
-          |- 'spark.rapids.memory.pinnedPool.size' should be set to 2048m.
+          |- 'spark.executor.memory' should be set to 2g/core.
+          |- 'spark.rapids.memory.pinnedPool.size' should be set to 2g.
           |- 'spark.rapids.sql.batchSizeBytes' was not set.
-          |- 'spark.rapids.sql.concurrentGpuTasks' should be set to Min(4, (gpuMemory / 7.5G)).
+          |- 'spark.rapids.sql.concurrentGpuTasks' should be set to Min(4, (gpuMemory / 7500m)).
           |- 'spark.rapids.sql.enabled' should be true to enable SQL operations on the GPU.
           |- 'spark.shuffle.manager' was not set.
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.task.resource.gpu.amount' should be set to 0.001.
           |- Could not infer the cluster configuration, recommendations are generated using default values!
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -441,8 +444,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.task.resource.gpu.amount' was not set.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -508,8 +511,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.task.resource.gpu.amount' was not set.
           |- Number of workers is missing. Setting default to 1.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -571,8 +574,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.advisoryPartitionSizeInBytes' was not set.
           |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
           |- GPU count is missing. Setting default to 1.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -634,8 +637,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.advisoryPartitionSizeInBytes' was not set.
           |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
           |- GPU memory is missing. Setting default to 15109m.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -696,8 +699,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.rapids.sql.reader.multithreaded.combine.sizeBytes' was not set.
           |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
           |- GPU memory is missing. Setting default to 15109m.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -759,8 +762,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
           |- GPU device is missing. Setting default to $T4Gpu.
           |- GPU memory is missing. Setting default to ${T4Gpu.getMemory}.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -842,8 +845,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.task.resource.gpu.amount' was not set.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -902,8 +905,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.task.resource.gpu.amount' was not set.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     val clusterPropsOpt = PropertiesLoader[ClusterProperties].loadFromContent(dataprocWorkerInfo)
@@ -991,8 +994,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.advisoryPartitionSizeInBytes' was not set.
           |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |- file.encoding should be [UTF-8] because GPU only supports the charset when using some expressions.
           |""".stripMargin
     // scalastyle:on line.size.limit
@@ -1073,14 +1076,99 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.advisoryPartitionSizeInBytes' was not set.
           |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
   }
 
-  test("plugin set to the wrong values") {
+  // This test verifies that AutoTuner recommends the correct value for
+  // "spark.plugins" property.
+  test("test 'spark.plugins' is recommended correctly") {
+    val customProps = mutable.LinkedHashMap(
+      "spark.executor.cores" -> "8",
+      "spark.executor.memory" -> "47222m",
+      "spark.task.resource.gpu.amount" -> "0.001")
+    // mock the properties loaded from eventLog
+    val logEventsProps: mutable.Map[String, String] =
+      mutable.LinkedHashMap[String, String](
+        "spark.executor.cores" -> "16",
+        "spark.executor.instances" -> "1",
+        "spark.executor.memory" -> "80g",
+        "spark.executor.resource.gpu.amount" -> "1",
+        "spark.executor.instances" -> "1",
+        "spark.sql.shuffle.partitions" -> "200",
+        "spark.sql.files.maxPartitionBytes" -> "1g",
+        "spark.task.resource.gpu.amount" -> "0.001",
+        "spark.rapids.memory.pinnedPool.size" -> "5g",
+        "spark.rapids.sql.concurrentGpuTasks" -> "4")
+    val dataprocWorkerInfo = buildGpuWorkerInfoAsString(Some(customProps), Some(32),
+      Some("212992MiB"), Some(5), Some(4), Some(T4Gpu.getMemory), Some(T4Gpu.toString))
+    val clusterPropsOpt = PropertiesLoader[ClusterProperties].loadFromContent(dataprocWorkerInfo)
+    val platform = PlatformFactory.createInstance(PlatformNames.DATAPROC, clusterPropsOpt)
+    val infoProvider = getMockInfoProvider(8126464.0, Seq(0), Seq(0.004), logEventsProps,
+      Some(testSparkVersion))
+    val autoTuner = buildAutoTunerForTests(dataprocWorkerInfo, infoProvider, platform)
+    val (properties, comments) = autoTuner.getRecommendedProperties()
+    val autoTunerOutput = Profiler.getAutoTunerResultsAsString(properties, comments)
+    // scalastyle:off line.size.limit
+    val expectedResults =
+      s"""|
+          |Spark Properties:
+          |--conf spark.dataproc.enhanced.execution.enabled=false
+          |--conf spark.dataproc.enhanced.optimizer.enabled=false
+          |--conf spark.executor.cores=16
+          |--conf spark.executor.memory=32g
+          |--conf spark.executor.memoryOverhead=15564m
+          |--conf spark.locality.wait=0
+          |--conf spark.plugins=com.nvidia.spark.SQLPlugin
+          |--conf spark.rapids.memory.pinnedPool.size=4g
+          |--conf spark.rapids.shuffle.multiThreaded.maxBytesInFlight=4g
+          |--conf spark.rapids.shuffle.multiThreaded.reader.threads=28
+          |--conf spark.rapids.shuffle.multiThreaded.writer.threads=28
+          |--conf spark.rapids.sql.batchSizeBytes=2147483647b
+          |--conf spark.rapids.sql.concurrentGpuTasks=3
+          |--conf spark.rapids.sql.enabled=true
+          |--conf spark.rapids.sql.format.parquet.multithreaded.combine.waitTime=1000
+          |--conf spark.rapids.sql.multiThreadedRead.numThreads=80
+          |--conf spark.rapids.sql.reader.multithreaded.combine.sizeBytes=10m
+          |--conf spark.shuffle.manager=com.nvidia.spark.rapids.spark$testSmVersion.RapidsShuffleManager
+          |--conf spark.sql.adaptive.advisoryPartitionSizeInBytes=128m
+          |--conf spark.sql.adaptive.autoBroadcastJoinThreshold=[FILL_IN_VALUE]
+          |--conf spark.sql.adaptive.coalescePartitions.minPartitionSize=4m
+          |--conf spark.sql.files.maxPartitionBytes=4g
+          |
+          |Comments:
+          |- 'spark.dataproc.enhanced.execution.enabled' should be disabled. WARN: Turning this property on might case the GPU accelerated Dataproc cluster to hang.
+          |- 'spark.dataproc.enhanced.execution.enabled' was not set.
+          |- 'spark.dataproc.enhanced.optimizer.enabled' should be disabled. WARN: Turning this property on might case the GPU accelerated Dataproc cluster to hang.
+          |- 'spark.dataproc.enhanced.optimizer.enabled' was not set.
+          |- 'spark.executor.memoryOverhead' was not set.
+          |- 'spark.plugins' should be set to the class name required for the RAPIDS Accelerator for Apache Spark.
+          |  Refer to: https://docs.nvidia.com/spark-rapids/user-guide/latest/getting-started/overview.html
+          |- 'spark.rapids.shuffle.multiThreaded.maxBytesInFlight' was not set.
+          |- 'spark.rapids.shuffle.multiThreaded.reader.threads' was not set.
+          |- 'spark.rapids.shuffle.multiThreaded.writer.threads' was not set.
+          |- 'spark.rapids.sql.batchSizeBytes' was not set.
+          |- 'spark.rapids.sql.enabled' was not set.
+          |- 'spark.rapids.sql.format.parquet.multithreaded.combine.waitTime' was not set.
+          |- 'spark.rapids.sql.multiThreadedRead.numThreads' was not set.
+          |- 'spark.rapids.sql.reader.multithreaded.combine.sizeBytes' was not set.
+          |- 'spark.shuffle.manager' was not set.
+          |- 'spark.sql.adaptive.advisoryPartitionSizeInBytes' was not set.
+          |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
+          |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
+          |""".stripMargin
+    // scalastyle:on line.size.limit
+    compareOutput(expectedResults, autoTunerOutput)
+  }
+
+  // This test verifies that Profiling AutoTuner retains existing
+  // "spark.plugins" property and RAPIDS plugin is added to it.
+  test("test existing 'spark.plugins' are retained and RAPIDS plugin is added") {
     val customProps = mutable.LinkedHashMap(
       "spark.executor.cores" -> "8",
       "spark.executor.memory" -> "47222m",
@@ -1118,6 +1206,7 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |--conf spark.executor.memory=32g
           |--conf spark.executor.memoryOverhead=15564m
           |--conf spark.locality.wait=0
+          |--conf spark.plugins=com.nvidia.spark.WrongPlugin0,com.nvidia.spark.WrongPlugin1,com.nvidia.spark.SQLPlugin
           |--conf spark.rapids.memory.pinnedPool.size=4g
           |--conf spark.rapids.shuffle.multiThreaded.maxBytesInFlight=4g
           |--conf spark.rapids.shuffle.multiThreaded.reader.threads=28
@@ -1140,6 +1229,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.dataproc.enhanced.optimizer.enabled' should be disabled. WARN: Turning this property on might case the GPU accelerated Dataproc cluster to hang.
           |- 'spark.dataproc.enhanced.optimizer.enabled' was not set.
           |- 'spark.executor.memoryOverhead' was not set.
+          |- 'spark.plugins' should include the class name required for the RAPIDS Accelerator for Apache Spark.
+          |  Refer to: https://docs.nvidia.com/spark-rapids/user-guide/latest/getting-started/overview.html
           |- 'spark.rapids.shuffle.multiThreaded.maxBytesInFlight' was not set.
           |- 'spark.rapids.shuffle.multiThreaded.reader.threads' was not set.
           |- 'spark.rapids.shuffle.multiThreaded.writer.threads' was not set.
@@ -1152,9 +1243,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.advisoryPartitionSizeInBytes' was not set.
           |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
-          |- RAPIDS Accelerator for Apache Spark jar is missing in "spark.plugins". Please refer to https://docs.nvidia.com/spark-rapids/user-guide/latest/getting-started/overview.html
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -1234,8 +1324,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.advisoryPartitionSizeInBytes' was not set.
           |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -1314,8 +1404,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.advisoryPartitionSizeInBytes' was not set.
           |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -1397,8 +1487,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- Average JVM GC time is very high. Other Garbage Collectors can be used for better performance.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -1475,8 +1565,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- Average JVM GC time is very high. Other Garbage Collectors can be used for better performance.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -1540,8 +1630,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.rapids.sql.reader.multithreaded.combine.sizeBytes' was not set.
           |- 'spark.sql.adaptive.advisoryPartitionSizeInBytes' was not set.
           |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.multiple")} [23.06.0, 23.02.1]
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.multiple")} [23.06.0, 23.02.1]
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     val rapidsJarsArr = Seq("rapids-4-spark_2.12-23.06.0-SNAPSHOT.jar",
@@ -1586,8 +1676,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.rapids.sql.reader.multithreaded.combine.sizeBytes' was not set.
           |- 'spark.sql.adaptive.advisoryPartitionSizeInBytes' was not set.
           |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
-          |- ${ProfilingAutoTunerConfigsProvider.latestPluginJarComment(latestPluginJarUrl, testAppJarVer)}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${latestPluginJarComment(latestPluginJarUrl, testAppJarVer)}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     val rapidsJarsArr = Seq(s"rapids-4-spark_2.12-$testAppJarVer.jar")
@@ -1634,7 +1724,7 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.rapids.sql.reader.multithreaded.combine.sizeBytes' was not set.
           |- 'spark.sql.adaptive.advisoryPartitionSizeInBytes' was not set.
           |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     val rapidsJarsArr = Seq(s"rapids-4-spark_2.12-$latestRelease.jar")
@@ -1642,7 +1732,10 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
     compareOutput(expectedResults, autoTunerOutput)
   }
 
-  test("Recommend file cache if parquet/orc and data thresholds are met") {
+  // Note: This test verifies that the AutoTuner comments about enabling the file cache
+  // but does not actually enable since this requires knowledge of the disk bandwidth
+  // and available disk space.
+  test("Comment about enabling file cache if parquet/orc and data thresholds are met") {
     val customProps = mutable.LinkedHashMap(
       "spark.sql.files.maxPartitionBytes" -> "12345678")
     // mock the properties loaded from eventLog
@@ -1684,7 +1777,7 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |--conf spark.executor.memory=32g
           |--conf spark.executor.memoryOverhead=15564m
           |--conf spark.locality.wait=0
-          |--conf spark.rapids.filecache.enabled=true
+          |--conf spark.rapids.filecache.enabled=false
           |--conf spark.rapids.memory.pinnedPool.size=4g
           |--conf spark.rapids.shuffle.multiThreaded.maxBytesInFlight=4g
           |--conf spark.rapids.shuffle.multiThreaded.reader.threads=28
@@ -1715,8 +1808,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- Average JVM GC time is very high. Other Garbage Collectors can be used for better performance.
           |- Enable file cache only if Spark local disks bandwidth is > 1 GB/s and you have sufficient disk space available to fit both cache and normal Spark temporary data.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -1792,8 +1885,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- Average JVM GC time is very high. Other Garbage Collectors can be used for better performance.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -1884,7 +1977,7 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
     val workerInfo = buildGpuWorkerInfoAsString(Some(customProps))
     val clusterPropsOpt = PropertiesLoader[ClusterProperties].loadFromContent(workerInfo)
     val platform = PlatformFactory.createInstance(PlatformNames.DEFAULT, clusterPropsOpt)
-    val autoTuner: AutoTuner = ProfilingAutoTunerConfigsProvider
+    val autoTuner: AutoTuner = ProfilingAutoTunerHelper
       .buildAutoTunerFromProps(workerInfo,
         AppSummaryInfoBaseProvider.fromAppInfo(None),
         platform, driverInfoProvider)
@@ -1898,7 +1991,7 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |
           |Comments:
           |- 'spark.rapids.sql.incompatibleDateFormats.enabled' was not set.
-          |- ${ProfilingAutoTunerConfigsProvider.commentForExperimentalConfig("spark.rapids.sql.incompatibleDateFormats.enabled")}
+          |- ${commentForExperimentalConfig("spark.rapids.sql.incompatibleDateFormats.enabled")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -1922,7 +2015,7 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
     val workerInfo = buildGpuWorkerInfoAsString(Some(customProps))
     val clusterPropsOpt = PropertiesLoader[ClusterProperties].loadFromContent(workerInfo)
     val platform = PlatformFactory.createInstance(PlatformNames.DEFAULT, clusterPropsOpt)
-    val autoTuner: AutoTuner = ProfilingAutoTunerConfigsProvider
+    val autoTuner: AutoTuner = ProfilingAutoTunerHelper
       .buildAutoTunerFromProps(workerInfo,
         getGpuAppMockInfoProvider, platform, driverInfoProvider)
     val (properties, comments) = autoTuner.getRecommendedProperties()
@@ -1960,9 +2053,9 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.files.maxPartitionBytes' was not set.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
-          |- ${ProfilingAutoTunerConfigsProvider.commentForExperimentalConfig("spark.rapids.sql.incompatibleDateFormats.enabled")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
+          |- ${commentForExperimentalConfig("spark.rapids.sql.incompatibleDateFormats.enabled")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -1977,7 +2070,7 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
     val workerInfo = buildGpuWorkerInfoAsString(Some(customProps))
     val clusterPropsOpt = PropertiesLoader[ClusterProperties].loadFromContent(workerInfo)
     val platform = PlatformFactory.createInstance(PlatformNames.DEFAULT, clusterPropsOpt)
-    val autoTuner: AutoTuner = ProfilingAutoTunerConfigsProvider
+    val autoTuner: AutoTuner = ProfilingAutoTunerHelper
       .buildAutoTunerFromProps(workerInfo,
         AppSummaryInfoBaseProvider.fromAppInfo(None),
         platform)
@@ -2007,7 +2100,7 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
     val workerInfo = buildGpuWorkerInfoAsString(Some(customProps))
     val clusterPropsOpt = PropertiesLoader[ClusterProperties].loadFromContent(workerInfo)
     val platform = PlatformFactory.createInstance(PlatformNames.DEFAULT, clusterPropsOpt)
-    val autoTuner: AutoTuner = ProfilingAutoTunerConfigsProvider
+    val autoTuner: AutoTuner = ProfilingAutoTunerHelper
       .buildAutoTunerFromProps(workerInfo,
         AppSummaryInfoBaseProvider.fromAppInfo(None),
         platform, driverInfoProvider)
@@ -2091,9 +2184,9 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.rapids.sql.reader.multithreaded.combine.sizeBytes' was not set.
           |- 'spark.shuffle.manager' was not set.
           |- 'spark.sql.adaptive.advisoryPartitionSizeInBytes' was not set.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.jars.missing")}
           |- Setting 'spark.sql.adaptive.autoBroadcastJoinThreshold' > 100m could lead to performance\n  regression. Should be set to a lower number.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -2231,8 +2324,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- Average JVM GC time is very high. Other Garbage Collectors can be used for better performance.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -2247,7 +2340,7 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
                                                       expectedSmVersion: String): Unit = {
     autoTuner.getShuffleManagerClassName match {
       case Right(smClassName) =>
-        assert(smClassName == ProfilingAutoTunerConfigsProvider
+        assert(smClassName == ProfilingAutoTunerHelper
           .buildShuffleManagerClassName(expectedSmVersion))
       case Left(comment) =>
         fail(s"Expected valid RapidsShuffleManager but got comment: $comment")
@@ -2311,8 +2404,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
       case Right(smClassName) =>
         fail(s"Expected error comment but got valid RapidsShuffleManager: $smClassName")
       case Left(comment) =>
-        assert(comment == ProfilingAutoTunerConfigsProvider
-          .shuffleManagerCommentForUnsupportedVersion(sparkVersion, autoTuner.platform))
+        assert(comment == shuffleManagerCommentForUnsupportedVersion(sparkVersion,
+          autoTuner.platform))
     }
   }
 
@@ -2367,7 +2460,7 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
       case Right(smClassName) =>
         fail(s"Expected error comment but got valid RapidsShuffleManager: $smClassName")
       case Left(comment) =>
-        assert(comment == ProfilingAutoTunerConfigsProvider.shuffleManagerCommentForMissingVersion)
+        assert(comment == shuffleManagerCommentForMissingVersion)
     }
   }
 
@@ -2445,8 +2538,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.shuffle.partitions' should be increased since spilling occurred in shuffle stages.
           |- Average JVM GC time is very high. Other Garbage Collectors can be used for better performance.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -2524,11 +2617,11 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- Average JVM GC time is very high. Other Garbage Collectors can be used for better performance.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.jars.missing")}
           |- Shuffle skew exists (when task's Shuffle Read Size > 3 * Avg Stage-level size) in
           |  stages with spilling. Increasing shuffle partitions is not recommended in this
           |  case since keys will still hash to the same task.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -2543,7 +2636,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
         "spark.executor.memory" -> "80g",
         "spark.executor.resource.gpu.amount" -> "1",
         "spark.executor.instances" -> "1",
-        "spark.serializer" -> "org.apache.spark.serializer.KryoSerializer"
+        "spark.serializer" -> "org.apache.spark.serializer.KryoSerializer",
+        "spark.plugins" -> "com.nvidia.spark.SQLPlugin"
       )
     val autoTuner = buildDefaultDataprocAutoTuner(logEventsProps)
     val (properties, comments) = autoTuner.getRecommendedProperties()
@@ -2600,9 +2694,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.task.resource.gpu.amount' was not set.
-          |- RAPIDS Accelerator for Apache Spark jar is missing in "spark.plugins". Please refer to https://docs.nvidia.com/spark-rapids/user-guide/latest/getting-started/overview.html
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -2618,7 +2711,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
         "spark.executor.resource.gpu.amount" -> "1",
         "spark.executor.instances" -> "1",
         "spark.serializer" -> "org.apache.spark.serializer.KryoSerializer",
-        "spark.kryo.registrator" -> "org.apache.SomeRegistrator,org.apache.SomeOtherRegistrator"
+        "spark.kryo.registrator" -> "org.apache.SomeRegistrator,org.apache.SomeOtherRegistrator",
+        "spark.plugins" -> "com.nvidia.spark.SQLPlugin"
       )
     val autoTuner = buildDefaultDataprocAutoTuner(logEventsProps)
     val (properties, comments) = autoTuner.getRecommendedProperties()
@@ -2675,9 +2769,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.task.resource.gpu.amount' was not set.
-          |- RAPIDS Accelerator for Apache Spark jar is missing in "spark.plugins". Please refer to https://docs.nvidia.com/spark-rapids/user-guide/latest/getting-started/overview.html
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -2691,9 +2784,9 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
         "spark.executor.instances" -> "1",
         "spark.executor.memory" -> "80g",
         "spark.executor.resource.gpu.amount" -> "1",
-        "spark.executor.instances" -> "1",
         "spark.serializer" -> "org.apache.spark.serializer.KryoSerializer",
-        "spark.kryo.registrator" -> ""
+        "spark.kryo.registrator" -> "",
+        "spark.plugins" -> "com.nvidia.spark.SQLPlugin"
       )
     val autoTuner = buildDefaultDataprocAutoTuner(logEventsProps)
     val (properties, comments) = autoTuner.getRecommendedProperties()
@@ -2750,9 +2843,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.task.resource.gpu.amount' was not set.
-          |- RAPIDS Accelerator for Apache Spark jar is missing in "spark.plugins". Please refer to https://docs.nvidia.com/spark-rapids/user-guide/latest/getting-started/overview.html
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -2766,7 +2858,7 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
         "spark.executor.instances" -> "1",
         "spark.executor.memory" -> "80g",
         "spark.executor.resource.gpu.amount" -> "1",
-        "spark.executor.instances" -> "1"
+        "spark.plugins" -> "com.nvidia.spark.SQLPlugin"
       )
     val emrWorkerInfo = buildGpuWorkerInfoAsString(None, Some(32),
       Some("212992MiB"), Some(5), Some(4), Some(T4Gpu.getMemory), Some(T4Gpu.toString))
@@ -2820,8 +2912,7 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.task.resource.gpu.amount' was not set.
-          |- RAPIDS Accelerator for Apache Spark jar is missing in "spark.plugins". Please refer to https://docs.nvidia.com/spark-rapids/user-guide/latest/getting-started/overview.html
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -2835,7 +2926,7 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
         "spark.executor.instances" -> "1",
         "spark.executor.memory" -> "80g",
         "spark.executor.resource.gpu.amount" -> "1",
-        "spark.executor.instances" -> "1"
+        "spark.plugins" -> "com.nvidia.spark.SQLPlugin"
       )
     val autoTuner = buildDefaultDataprocAutoTuner(logEventsProps)
     val (properties, comments) = autoTuner.getRecommendedProperties()
@@ -2888,9 +2979,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.task.resource.gpu.amount' was not set.
-          |- RAPIDS Accelerator for Apache Spark jar is missing in "spark.plugins". Please refer to https://docs.nvidia.com/spark-rapids/user-guide/latest/getting-started/overview.html
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -2904,8 +2994,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
         "spark.executor.instances" -> "1",
         "spark.executor.memory" -> "80g",
         "spark.executor.resource.gpu.amount" -> "1",
-        "spark.executor.instances" -> "1",
-        "spark.dataproc.enhanced.execution.enabled" -> "false"
+        "spark.dataproc.enhanced.execution.enabled" -> "false",
+        "spark.plugins" -> "com.nvidia.spark.SQLPlugin"
       )
     val autoTuner = buildDefaultDataprocAutoTuner(logEventsProps)
     val (properties, comments) = autoTuner.getRecommendedProperties()
@@ -2955,9 +3045,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.task.resource.gpu.amount' was not set.
-          |- RAPIDS Accelerator for Apache Spark jar is missing in "spark.plugins". Please refer to https://docs.nvidia.com/spark-rapids/user-guide/latest/getting-started/overview.html
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -3028,8 +3117,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
             |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
             |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
             |- 'spark.sql.files.maxPartitionBytes' was not set.
-            |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-            |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+            |- ${classPathComments("rapids.jars.missing")}
+            |- ${classPathComments("rapids.shuffle.jars")}
             |""".stripMargin
       // scalastyle:on line.size.limit
       compareOutput(expectedResults, autoTunerOutput)
@@ -3088,11 +3177,12 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
             |- 'spark.rapids.sql.multiThreadedRead.numThreads' was not set.
             |- 'spark.sql.adaptive.autoBroadcastJoinThreshold' was not set.
             |- 'spark.sql.shuffle.partitions' should be increased since spilling occurred in shuffle stages.
-            |- ${ProfilingAutoTunerConfigsProvider.latestPluginJarComment(latestPluginJarUrl, testAppJarVer)}
-            |- ${ProfilingAutoTunerConfigsProvider.notEnoughMemCommentForKey("spark.executor.memory")}
-            |- ${ProfilingAutoTunerConfigsProvider.notEnoughMemCommentForKey("spark.rapids.memory.pinnedPool.size")}
-            |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
-            |- ${ProfilingAutoTunerConfigsProvider.notEnoughMemComment(40140)}
+            |- ${latestPluginJarComment(latestPluginJarUrl, testAppJarVer)}
+            |- ${notEnoughMemCommentForKey("spark.executor.memory")}
+            |- ${notEnoughMemCommentForKey("spark.rapids.memory.pinnedPool.size")}
+            |- ${classPathComments("rapids.shuffle.jars")}
+            |- ${notEnoughMemComment(40140)}
+            |- $missingGpuDiscoveryScriptComment
             |""".stripMargin.trim
       // scalastyle:on line.size.limit
       compareOutput(expectedResults, actualResults)
@@ -3170,8 +3260,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.sql.shuffle.partitions' should be increased since task OOM occurred in shuffle stages.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -3252,8 +3342,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.sql.shuffle.partitions' should be increased since task OOM occurred in shuffle stages.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -3429,6 +3519,7 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |--conf spark.executor.memory=32g
           |--conf spark.executor.memoryOverhead=9420m
           |--conf spark.locality.wait=0
+          |--conf spark.memory.offHeap.size=10240m
           |--conf spark.rapids.memory.pinnedPool.size=3g
           |--conf spark.rapids.shuffle.multiThreaded.reader.threads=28
           |--conf spark.rapids.shuffle.multiThreaded.writer.threads=28
@@ -3466,8 +3557,8 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.task.resource.gpu.amount' was not set.
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
@@ -3544,12 +3635,12 @@ class ProfilingAutoTunerSuite extends ProfilingAutoTunerSuiteBase {
           |- 'spark.sql.adaptive.enabled' should be enabled for better performance.
           |- 'spark.sql.files.maxPartitionBytes' was not set.
           |- 'spark.task.resource.gpu.amount' was not set.
-          |- ${ProfilingAutoTunerConfigsProvider.notEnoughMemCommentForKey("spark.executor.memory")}
-          |- ${ProfilingAutoTunerConfigsProvider.notEnoughMemCommentForKey("spark.executor.memoryOverhead")}
-          |- ${ProfilingAutoTunerConfigsProvider.notEnoughMemCommentForKey("spark.rapids.memory.pinnedPool.size")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.jars.missing")}
-          |- ${ProfilingAutoTunerConfigsProvider.classPathComments("rapids.shuffle.jars")}
-          |- ${ProfilingAutoTunerConfigsProvider.notEnoughMemComment(75775)}
+          |- ${notEnoughMemCommentForKey("spark.executor.memory")}
+          |- ${notEnoughMemCommentForKey("spark.executor.memoryOverhead")}
+          |- ${notEnoughMemCommentForKey("spark.rapids.memory.pinnedPool.size")}
+          |- ${classPathComments("rapids.jars.missing")}
+          |- ${classPathComments("rapids.shuffle.jars")}
+          |- ${notEnoughMemComment(75775)}
           |""".stripMargin
     // scalastyle:on line.size.limit
     compareOutput(expectedResults, autoTunerOutput)
