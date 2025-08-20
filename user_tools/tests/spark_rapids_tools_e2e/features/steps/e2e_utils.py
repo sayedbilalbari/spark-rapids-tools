@@ -54,6 +54,7 @@ class E2ETestUtils:
         Run a system command and return the result.
         If verbose mode is enabled by the behave config, print the command and its output
         """
+        # tox already activates its virtualenv; just run with current environment
         cmd_result = subprocess.run(cmd, capture_output=True, text=True)
         if cls.is_verbose_mode():
             print(cls.get_cmd_output_str(cmd_result))
@@ -80,7 +81,7 @@ class E2ETestUtils:
         TODO: We can add more options to the command as needed.
         """
         base_cmd = [
-            cls.get_spark_rapids_cli(),
+            'spark_rapids',
             'qualification',
             '--platform', platform,
             '--eventlogs', ','.join(event_logs),
@@ -104,7 +105,7 @@ class E2ETestUtils:
         TODO: We can add more options to the command as needed.
         """
         base_cmd = [
-            cls.get_spark_rapids_cli(),
+            'spark_rapids',
             'profiling',
             '--platform', platform,
             '--eventlogs', ','.join(event_logs),
@@ -137,15 +138,12 @@ class E2ETestUtils:
         return os.path.join(cls.get_e2e_tests_resource_path(), 'event_logs')
 
     @staticmethod
-    def get_spark_rapids_cli() -> str:
-        return os.path.join(os.environ['E2E_TEST_VENV_DIR'], 'bin', 'spark_rapids')
-
-    @staticmethod
     def get_spark_home() -> str:
-        venv_path = os.environ['E2E_TEST_VENV_DIR']
-        spark_home = glob.glob(os.path.join(venv_path, 'lib', '*', 'site-packages', 'pyspark'))
-        if spark_home:
-            return spark_home[0]
+        venv_path = os.environ.get('VIRTUAL_ENV')
+        if venv_path:
+            spark_home = glob.glob(os.path.join(venv_path, 'lib', '*', 'site-packages', 'pyspark'))
+            if spark_home:
+                return spark_home[0]
         raise RuntimeError("Spark home not found")
 
     @staticmethod
