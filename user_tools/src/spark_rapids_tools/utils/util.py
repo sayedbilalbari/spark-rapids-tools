@@ -15,17 +15,19 @@
 """Utility and helper methods"""
 
 import os
-import pathlib
+from contextlib import contextmanager
+from pathlib import Path, PurePath
 import re
 import shutil
 import ssl
 import sys
 import textwrap
 import urllib
+import tempfile
 import xml.etree.ElementTree as elem_tree
 from functools import reduce
 from operator import getitem
-from typing import Any, Optional, ClassVar
+from typing import Any, Optional, ClassVar, Iterator
 
 import certifi
 import fire
@@ -39,6 +41,37 @@ from spark_rapids_pytools import get_version
 from spark_rapids_pytools.common.sys_storage import FSUtil
 from spark_rapids_pytools.common.utilities import Utils
 from spark_rapids_tools.exceptions import CspPathAttributeError
+
+
+@contextmanager
+def temp_file_with_contents(contents: str,
+                            suffix: str = '.txt',
+                            dir_path: str = None) -> Iterator[str]:
+    """Create a temporary local file with provided contents and ensure cleanup.
+    :param contents: The text to write into the temporary file.
+    :param suffix: File name suffix to use (e.g., '.txt', '.json').
+    :param dir_path: Directory where the temp file is created. Defaults to the system temp directory.
+    """
+    tmp_file = tempfile.NamedTemporaryFile(
+        mode='w', encoding='utf-8', delete=False,
+        dir=dir_path or tempfile.gettempdir(), suffix=suffix
+    )
+    try:
+        tmp_file.write(contents)
+        tmp_file.flush()
+        temp_path = tmp_file.name
+    finally:
+        tmp_file.close()
+
+    try:
+        yield Path(temp_path).absolute().as_uri()
+    finally:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception:  # pylint: disable=broad-except
+            # best-effort cleanup; ignore failures
+            pass
 
 
 def get_elem_from_dict(data, keys):
@@ -68,6 +101,15 @@ def stringify_path(fpath) -> str:
     return os.path.abspath(expanded_path)
 
 
+def resolve_and_prepare_log_file(tools_home_dir: str):
+    run_id = Utils.get_or_set_rapids_tools_env('RUN_ID')
+    log_dir = f'{tools_home_dir}/logs'
+    log_file = f'{log_dir}/{run_id}.log'
+    Utils.set_rapids_tools_env('LOG_FILE', log_file)
+    FSUtil.make_dirs(log_dir)
+    return log_file
+
+
 def is_http_file(value: Any) -> bool:
     try:
         TypeAdapter(AnyHttpUrl).validate_python(value)
@@ -83,7 +125,7 @@ def get_path_as_uri(fpath: str) -> str:
         return fpath
     # stringify the path to apply the common methods which is expanding the file.
     local_path = stringify_path(fpath)
-    return pathlib.PurePath(local_path).as_uri()
+    return PurePath(local_path).as_uri()
 
 
 def to_camel_case(word: str) -> str:
@@ -162,14 +204,17 @@ def init_environment(short_name: str) -> str:
     tools_home_dir = FSUtil.build_path(home_dir, '.spark_rapids_tools')
     Utils.set_rapids_tools_env('HOME', tools_home_dir)
 
-    # Set the 'LOG_FILE' environment variable and create the log directory.
-    log_dir = f'{tools_home_dir}/logs'
-    log_file = f'{log_dir}/{short_name}_{uuid}.log'
-    Utils.set_rapids_tools_env('LOG_FILE', log_file)
-    FSUtil.make_dirs(log_dir)
+    # 'RUN_ID' is used to create a common ID across a tools execution.
+    # This ID unifies -
+    #    * Appended to loggers for adding meta information
+    #    * For creating the output_directory with the same ID
+    #    * For creating local dependency work folders
+    #    * For creating the log file with the same ID
+    Utils.set_rapids_tools_env('RUN_ID', f'{short_name}_{uuid}')
 
-    # Print the log file location
+    log_file = resolve_and_prepare_log_file(tools_home_dir)
     print(Utils.gen_report_sec_header('Application Logs'))
+    print(f"Run ID  : {Utils.get_or_set_rapids_tools_env('RUN_ID')}")
     print(f'Location: {log_file}')
     print('In case of any errors, please share the log file with the Spark RAPIDS team.\n')
 
@@ -417,6 +462,21 @@ class Utilities:
             'yes': True,
             'no': False
         }.get(s.lower(), False)
+
+    @staticmethod
+    def str_to_camel(s: str) -> str:
+        """
+        Convert a string to camel case.
+        Adopted from
+        https://www.30secondsofcode.org/python/s/string-capitalize-camel-snake-kebab/#camel-case-string
+        > To convert a string to camel case, you can use re.sub() to replace any - or _ with a space,
+        > using the regexp r"(_|-)+". Then, use str.title() to capitalize every word and convert the
+        > rest to lowercase. Finally, use str.replace() to remove any spaces between words.
+        :param s: The input string.
+        :return: The camel case version of the input string.
+        """
+        s = re.sub(r'([_\-])+', ' ', s).title().replace(' ', '')
+        return ''.join([s[0].lower(), s[1:]])
 
     @staticmethod
     def scala_to_pandas_type(scala_type: str) -> str:

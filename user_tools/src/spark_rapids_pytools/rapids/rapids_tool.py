@@ -23,8 +23,9 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from functools import cached_property
 from logging import Logger
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Generic
 
 import spark_rapids_pytools
 from spark_rapids_pytools import get_spark_dep_version
@@ -36,6 +37,8 @@ from spark_rapids_pytools.common.utilities import ToolLogging, Utils, ToolsSpinn
 from spark_rapids_pytools.rapids.rapids_job import RapidsJobPropContainer
 from spark_rapids_pytools.rapids.tool_ctxt import ToolContext
 from spark_rapids_tools import CspEnv
+from spark_rapids_tools.api_v1 import ToolResultHandlerT
+from spark_rapids_tools.api_v1 import APIResHandler, QualCore, ProfCore
 from spark_rapids_tools.configuration.common import RuntimeDependency
 from spark_rapids_tools.configuration.submission.distributed_config import DistributedToolsConfig
 from spark_rapids_tools.configuration.tools_config import ToolsConfig
@@ -70,6 +73,15 @@ class RapidsTool(object):
     ctxt: ToolContext = field(default=None, init=False)
     logger: Logger = field(default=None, init=False)
     spinner: ToolsSpinner = field(default=None, init=False)
+
+    @property
+    def csp_output_path(self) -> str:
+        """
+        Get the output path for the current tool execution. This is different than self.output_folder
+        because it includes the folder created by the tool context
+        :return: The output path as a string.
+        """
+        return self.ctxt.get_csp_output_path()
 
     def get_tools_config_obj(self) -> Optional['ToolsConfig']:
         """
@@ -148,7 +160,7 @@ class RapidsTool(object):
         self.logger.debug('Processing Output Arguments')
         # make sure output_folder is absolute
         if self.output_folder is None:
-            self.output_folder = Utils.get_rapids_tools_env('OUTPUT_DIRECTORY', os.getcwd())
+            self.output_folder = Utils.get_or_set_rapids_tools_env('OUTPUT_DIRECTORY', os.getcwd())
         try:
             output_folder_path = LocalPath(self.output_folder)
             self.output_folder = output_folder_path.no_scheme
@@ -223,6 +235,10 @@ class RapidsTool(object):
             # Ignore the exception here because this might be called toward the end/failure
             # and we do want to avoid nested exceptions.
             self.logger.debug('Failed to cleanup run')
+        finally:
+            # Clear RUN_ID to avoid leaking across runs in same process (single-run assumption)
+            env_key = Utils.find_full_rapids_tools_env_key('RUN_ID')
+            os.environ.pop(env_key, None)
 
     def _delete_local_dep_folder(self):
         # clean_up the local dependency folder
@@ -431,10 +447,27 @@ class RapidsTool(object):
 
 
 @dataclass
-class RapidsJarTool(RapidsTool):
+class RapidsJarTool(RapidsTool, Generic[ToolResultHandlerT]):
     """
     A wrapper class to represent wrapper commands that require RAPIDS jar file.
     """
+
+    @cached_property
+    def core_handler(self) -> APIResHandler[ToolResultHandlerT]:
+        """
+        Create and return a coreHandler instance for reading core reports.
+        This property should always be called after the scala code has executed.
+        Otherwise, the property has to be refreshed
+        :return: An instance of ToolResultHandlerT which could be QualCoreResultHandler
+                 or ProfCoreResultHandler.
+        :raises ValueError: If the tool name does not match any known core handler.
+        """
+        normalized_tool_name = self.name.lower()
+        if 'qualification' in normalized_tool_name:
+            return QualCore(self.csp_output_path)
+        if 'profiling' in normalized_tool_name:
+            return ProfCore(self.csp_output_path)
+        raise ValueError(f'Tool name [{normalized_tool_name}] has no CoreHandler associated with it.')
 
     def _process_jar_arg(self):
         # TODO: use the StorageLib to download the jar file
@@ -569,8 +602,8 @@ class RapidsJarTool(RapidsTool):
 
     @timeit('Downloading dependencies for local Mode')  # pylint: disable=too-many-function-args
     def _download_dependencies(self):
-        # Default timeout in seconds (30 minutes)
-        default_download_timeout = 1800
+        # Default timeout in seconds (60 minutes)
+        default_download_timeout = 3600
 
         def exception_handler(future):
             # Handle any exceptions raised by the task
@@ -794,19 +827,31 @@ class RapidsJarTool(RapidsTool):
         out_tree_list = self._gen_output_tree()
         return Utils.gen_multiline_str(res_arr, out_tree_list)
 
+    def _init_core_handler(self) -> None:
+        """
+        Initializes the core_handler object and store it into the context.
+        This method is used to force the refresh of the core_handler property just in case
+        the property was called before the tool execution.
+        """
+        # force the refresh of the core handler property
+        if 'core_handler' in self.__dict__:
+            del self.__dict__['core_handler']
+        self.ctxt.set_ctxt('coreHandler', self.core_handler)
+
     def _evaluate_rapids_jar_tool_output_exist(self) -> bool:
         """
         Used as a subtask of self._process_output(). this method has the responsibility of
         checking if the tools produced no output and take the necessary action
         :return: True if the tool has generated an output
         """
-        rapids_output_dir = self.ctxt.get_rapids_output_folder()
+        self._init_core_handler()
         res = True
-        if not self.ctxt.platform.storage.resource_exists(rapids_output_dir):
-            res = False
-            self.ctxt.set_ctxt('wrapperOutputContent',
-                               self._report_results_are_empty())
-            self.logger.info('The Rapids jar tool did not generate an output directory')
+        if self.core_handler.is_empty():
+            if not self.core_handler.out_path.exists():
+                # There is no output_folder at all
+                res = False
+                self.ctxt.set_ctxt('wrapperOutputContent', self._report_results_are_empty())
+                self.logger.info('The Rapids jar tool did not generate an output directory')
         self.ctxt.set_ctxt('rapidsOutputIsGenerated', res)
         return res
 

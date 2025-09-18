@@ -14,6 +14,7 @@
 
 """Module that contains the definition of the qualification Result handler for the core module."""
 
+import re
 from dataclasses import dataclass
 
 from spark_rapids_tools import override
@@ -25,6 +26,12 @@ from spark_rapids_tools.api_v1.report_reader import ToolReportReader
 @dataclass
 class QualCoreResultHandler(ResultHandler):
     """Result handler for the qualification core module."""
+    class Meta(ResultHandler.Meta):    # pylint: disable=too-few-public-methods
+        """
+        Meta class for QualCoreResultHandler to define common attributes.
+        """
+        id_regex = re.compile(r'qual_core_output')
+
     @override
     @property
     def alpha_reader(self) -> ToolReportReader:

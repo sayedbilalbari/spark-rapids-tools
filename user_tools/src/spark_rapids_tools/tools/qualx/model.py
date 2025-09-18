@@ -133,6 +133,9 @@ def train(
     positive_weight = sample_weight.get('positive', 1.0)
     negative_weight = sample_weight.get('negative', 1.0)
 
+    if LOG_LABEL:
+        threshold = np.log(threshold)
+
     # automatically compute weights (if 'auto' is specified) to balance positive/negative samples
     positive_weight, negative_weight = compute_sample_weights(y_tune, threshold, positive_weight, negative_weight)
 
@@ -260,8 +263,10 @@ def calibrate(
         )
         bin_labels = np.arange(0, num_bins)
         calib_df['y_qz'] = pd.cut(calib_df['y'], bins, labels=bin_labels)
+        # In group_by statement, Enforce observed=False as the default 'observed=False' is
+        # deprecated and will be changed to True in a future version of pandas.
         y_qz_hist_df = calib_df \
-            .groupby(['y_qz'], as_index=False) \
+            .groupby(['y_qz'], as_index=False, observed=False) \
             .agg(count=pd.NamedAgg('y_qz', 'size')) \
             .sort_values('y_qz')
         smallest_count_per_bin = np.min(y_qz_hist_df['count'])

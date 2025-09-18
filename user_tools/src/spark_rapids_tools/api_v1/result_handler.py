@@ -14,18 +14,54 @@
 
 """Module that contains the definitions of result accessors and handlers"""
 
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from functools import cached_property
 from logging import Logger
-from typing import Dict, Optional, TypeVar, Type
+from typing import Dict, Optional, TypeVar, Type, Union, List, Callable
 
 import pandas as pd
+from pyarrow.fs import FileType
 
 from spark_rapids_pytools.common.utilities import ToolLogging
 from spark_rapids_tools.api_v1 import AppHandler
 from spark_rapids_tools.api_v1.report_reader import ToolReportReader
-from spark_rapids_tools.storagelib.cspfs import BoundedCspPath
+from spark_rapids_tools.storagelib.cspfs import BoundedCspPath, CspFs
+
+
+class ResultHandlerBaseMeta:    # pylint: disable=too-few-public-methods
+    """
+    Meta class for ResultHandler to define common attributes.
+    """
+    id_regex: re.Pattern[str] = None
+
+    @classmethod
+    def find_report_paths(
+            cls,
+            root_path: Union[str, BoundedCspPath],
+            filter_cb: Optional[Callable[[BoundedCspPath], bool]] = None
+    ) -> Union[List[str], List[BoundedCspPath]]:
+        """
+        Find all report directory paths under the given root that match the class-defined `id_regex` pattern.
+        :param root_path: The root directory or `BoundedCspPath` where reports are stored.
+        :param filter_cb: Optional callback to filter the found report paths.
+        :return: A list of matching report directory paths as strings or `BoundedCspPath` objects,
+                depending on the input type.
+        """
+        report_csps = CspFs.glob_path(
+            path=root_path,
+            pattern=cls.id_regex,
+            item_type=FileType.Directory,
+            recursive=False
+        )
+        if filter_cb is None:
+            filtered_csp_paths = report_csps
+        else:
+            filtered_csp_paths = [p for p in report_csps if filter_cb(p)]
+        if isinstance(root_path, str):
+            return [p.to_str_format() for p in filtered_csp_paths]
+        return report_csps
 
 
 @dataclass
@@ -43,6 +79,9 @@ class ResultHandler(object):
                         created. These handlers manage application-specific data and metadata. This
                         field is not initialized directly and is set up in the `__post_init__` method.
     """
+    class Meta(ResultHandlerBaseMeta):    # pylint: disable=too-few-public-methods
+        id_regex = re.compile(r'UNDEFINED')
+
     report_id: str
     out_path: BoundedCspPath
     readers: Dict[str, ToolReportReader]
@@ -117,7 +156,7 @@ class ResultHandler(object):
         """
         reader = self.tbl_reader_map.get(tbl)
         if reader:
-            return reader.is_per_app
+            return reader.is_per_app()
         return False
 
     def get_reader_by_tbl(self, tbl: str) -> Optional[ToolReportReader]:
@@ -131,6 +170,25 @@ class ResultHandler(object):
     #########################
     # Public Interfaces
     #########################
+
+    def get_folder_name(self) -> str:
+        """
+        get the base-name of the folder output. This can be handy to act as an identifier for the
+        output processor.
+        :return: the basename of the output folder
+        """
+        return self.out_path.base_name()
+
+    def get_reader_path(self, report_id: str) -> Optional[BoundedCspPath]:
+        """
+        Get the path to the report file for the given report ID.
+        :param report_id: The unique identifier for the report.
+        :return: The path to the report file, or None if not found.
+        """
+        reader = self.readers.get(report_id)
+        if reader:
+            return reader.out_path
+        return None
 
     def create_empty_df(self, tbl: str) -> pd.DataFrame:
         """
@@ -152,6 +210,20 @@ class ResultHandler(object):
         if reader:
             return reader.get_table_path(table_label)
         return None
+
+    def is_empty(self) -> bool:
+        """
+        Check if the result handler has no data.
+        :return: True if the result handler is empty, False otherwise.
+        """
+        # first check that the output file exists
+        if not self.out_path.exists():
+            return True
+        # then check that the app_handlers are empty
+        return not self.app_handlers
+
+    def get_raw_metrics_path(self) -> Optional[BoundedCspPath]:
+        return self.get_reader_path('coreRawMetrics')
 
 #########################
 # Type Definitions
