@@ -367,6 +367,7 @@ abstract class Platform(var gpuDevice: Option[GpuDevice],
     "3.5.3" -> "353",
     "3.5.4" -> "354",
     "3.5.5" -> "355",
+    "3.5.6" -> "356",
     "4.0.0" -> "400"
   )
 
@@ -662,14 +663,26 @@ abstract class Platform(var gpuDevice: Option[GpuDevice],
                 _recommendedWorkerNode.numGpus).toInt
             }
 
+            // Calculate cores per executor by dividing the total cores in the instance
+            // by the number of GPUs in the instance
+            val recommendedCoresPerExecutor = math.ceil(
+              _recommendedWorkerNode.cores.toDouble / _recommendedWorkerNode.numGpus
+            ).toInt
+
+            // Calculate the recommended number of executors by dividing the total number of
+            // executors by the recommended cores per executor
+            val recommendedNumExecutors =
+              (clusterConfig.coresPerExec * clusterConfig.numExecutors) /
+                recommendedCoresPerExecutor
+
             val dynamicAllocSettings = Platform.getDynamicAllocationSettings(sourceSparkProperties)
             recommendedWorkerNode = Some(_recommendedWorkerNode)
             recommendedClusterInfo = Some(RecommendedClusterInfo(
               vendor = vendor,
-              coresPerExecutor = clusterConfig.coresPerExec,
+              coresPerExecutor = recommendedCoresPerExecutor,
               numWorkerNodes = numWorkerNodes,
               numGpusPerNode = _recommendedWorkerNode.numGpus,
-              numExecutors = clusterConfig.numExecutors,
+              numExecutors = recommendedNumExecutors,
               gpuDevice = _recommendedWorkerNode.gpuDevice.toString,
               dynamicAllocationEnabled = dynamicAllocSettings.enabled,
               dynamicAllocationMaxExecutors = dynamicAllocSettings.max,
@@ -698,6 +711,20 @@ abstract class Platform(var gpuDevice: Option[GpuDevice],
    */
   final def getUserEnforcedSparkProperty(propertyKey: String): Option[String] = {
     userEnforcedRecommendations.get(propertyKey)
+  }
+
+  /**
+   * Check if the property is preserved in the target cluster.
+   */
+  final def isPropertyPreserved(propertyKey: String): Boolean = {
+    targetCluster.exists(_.getSparkProperties.preservePropertiesSet.contains(propertyKey))
+  }
+
+  /**
+   * Check if the property is excluded in the target cluster.
+   */
+  final def isPropertyExcluded(propertyKey: String): Boolean = {
+    targetCluster.exists(_.getSparkProperties.excludePropertiesSet.contains(propertyKey))
   }
 
   /**
@@ -916,7 +943,7 @@ class OnPremPlatform(gpuDevice: Option[GpuDevice],
           gpuDevice = gpuDevice)
       }
     }.orElse {
-      logInfo("Worker info or Gpu info is not provided in the target cluster. " +
+      logDebug("Worker info or Gpu info is not provided in the target cluster. " +
         "Skipping recommended instance info creation.")
       None
     }
@@ -1023,7 +1050,7 @@ object PlatformFactory extends Logging {
     }
     val platform = createPlatformInstance(platformName, gpuDevice,
       targetClusterProps)
-    logInfo(s"Using platform: $platform")
+    logDebug(s"Using platform: $platform")
     platform
   }
 }

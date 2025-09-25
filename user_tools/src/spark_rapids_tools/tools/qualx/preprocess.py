@@ -24,7 +24,7 @@ import re
 
 import pandas as pd
 
-from spark_rapids_tools.api_v1 import APIHelpers
+from spark_rapids_tools.api_v1 import ProfWrapper
 from spark_rapids_tools.tools.qualx.config import get_config
 from spark_rapids_tools.tools.qualx.util import (
     ensure_directory,
@@ -57,22 +57,29 @@ def get_alignment() -> pd.DataFrame:
     if not abs_path:
         raise ValueError(f'Alignment directory not found: {alignment_dir}')
 
-    # concatenate all CSV files in alignment_file directory
-    csv_files = glob.glob(f'{abs_path}/*.csv')
+    # list all CSV files in alignment_file directory
+    csv_files = sorted(glob.glob(f'{abs_path}/*.csv'))
+    # move basename.csv (latest) file to end of list
+    if len(csv_files) > 1 and not re.search(r'.*_[0-9]+.csv$', csv_files[0]):
+        base_file = csv_files.pop(0)
+        csv_files.append(base_file)
 
+    # load and concatenate CSV files
     chunk_size = 100
     alignment_dfs = []
     for i in range(0, len(csv_files), chunk_size):
         chunk_files = csv_files[i:i + chunk_size]
         chunk_df = pd.concat([pd.read_csv(f) for f in chunk_files], ignore_index=True)
-        chunk_df.drop_duplicates(inplace=True)
         alignment_dfs.append(chunk_df)
 
     if alignment_dfs:
         alignment_df = pd.concat(alignment_dfs, ignore_index=True)
-        alignment_df.drop_duplicates(inplace=True)
+        # remove duplicate CPU runs, keeping only the most recent GPU run
+        subset = [col for col in ['appId_cpu', 'sqlID_cpu'] if col in alignment_df.columns]
+        alignment_df.drop_duplicates(subset=subset, inplace=True, keep='last')
     else:
-        alignment_df = pd.DataFrame(columns=['appId', 'sqlId'])
+        # create empty alignment_df with minimal set of columns
+        alignment_df = pd.DataFrame(columns=['appId_cpu', 'appId_gpu'])
 
     return alignment_df
 
@@ -269,7 +276,7 @@ def load_profiles(
             app_meta = ds_meta['app_meta']
         elif profile_dir is not None:
             # during training/evaluation, we expect profile_dir to point to the qualx_cache
-            profile_paths = APIHelpers.ProfWrapper.find_report_paths(f'{profile_dir}/{ds_name}')
+            profile_paths = ProfWrapper.find_report_paths(f'{profile_dir}/{ds_name}')
             # get app_meta, or infer from directory structure of eventlogs
             app_meta = ds_meta.get('app_meta', infer_app_meta(ds_meta['eventlogs']))
         else:

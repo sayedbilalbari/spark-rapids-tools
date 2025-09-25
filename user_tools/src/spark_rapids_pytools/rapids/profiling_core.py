@@ -18,10 +18,11 @@ from dataclasses import dataclass
 from typing import List
 
 from spark_rapids_pytools.rapids.rapids_tool import RapidsJarTool
+from spark_rapids_tools.api_v1 import ProfCore
 
 
 @dataclass
-class ProfilingCore(RapidsJarTool):
+class ProfilingCore(RapidsJarTool[ProfCore]):
     """
     Core profiling tool
     """

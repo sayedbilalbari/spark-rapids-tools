@@ -21,7 +21,7 @@ import scala.collection.mutable
 import scala.util.control.NonFatal
 import scala.util.matching.Regex
 
-import com.nvidia.spark.rapids.tool.{AppSummaryInfoBaseProvider, ClusterSizingStrategy, ConstantGpuCountStrategy, GpuDevice, Platform, PlatformFactory}
+import com.nvidia.spark.rapids.tool.{AppSummaryInfoBaseProvider, ClusterSizingStrategy, ConstantGpuCountStrategy, DatabricksPlatform, GpuDevice, Platform, PlatformFactory}
 import com.nvidia.spark.rapids.tool.profiling._
 import org.yaml.snakeyaml.constructor.ConstructorException
 
@@ -246,10 +246,12 @@ abstract class AutoTuner(
   var comments = new mutable.ListBuffer[String]()
   var recommendations: mutable.LinkedHashMap[String, TuningEntryTrait] =
     mutable.LinkedHashMap[String, TuningEntryTrait]()
-  // list of recommendations to be skipped for recommendations
-  // Note that the recommendations will be computed anyway to avoid breaking dependencies.
+  // Set of properties for which recommendations will be skipped.
+  // Recommendations for these properties will not be computed, ensuring that dependent properties
+  // are also affected correctly.
   private val skippedRecommendations: mutable.HashSet[String] = mutable.HashSet[String]()
-  // list of recommendations having the calculations disabled, and only depend on default values
+  // Set of properties for which only source application values are used and
+  // no calculations are performed.
   protected val limitedLogicRecommendations: mutable.HashSet[String] = mutable.HashSet[String]()
   // When enabled, the profiler recommendations should only include updated settings.
   private var filterByUpdatedPropertiesEnabled: Boolean = true
@@ -280,6 +282,10 @@ abstract class AutoTuner(
    * @return true if the entry should be included in the final recommendations, false otherwise
    */
   def shouldIncludeInFinalRecommendations(tuningEntry: TuningEntryTrait): Boolean = {
+    if (platform.isPropertyPreserved(tuningEntry.name)) {
+      // If the property is preserved, it should be included in the final recommendations.
+      return true
+    }
     if (filterByUpdatedPropertiesEnabled) {
       tuningEntry.isTuned()
     } else {
@@ -315,6 +321,9 @@ abstract class AutoTuner(
 
   /**
    * Combined tuning table that merges the default tuning definitions with user-defined ones.
+   * Properties in the 'exclude' list are excluded from the final table.
+   * Properties in the 'preserve' list are added with enabled=true and bootstrapEntry=true.
+   * Properties in the 'enforced' map are added with enabled=true
    * Mutable to allow adding new definitions at runtime.
    */
   private lazy val finalTuningTable: Map[String, TuningEntryDefinition] = {
@@ -325,12 +334,22 @@ abstract class AutoTuner(
         .map(_.getSparkProperties.tuningDefinitionsMap)
         .getOrElse(Map.empty[String, TuningEntryDefinition])
 
+    // Exclude properties specified in the skip list (Tool specific or
+    // user specified using `exclude` section in target cluster)
+    skippedRecommendations.foreach(baseMap.remove)
+
+    // Add or update tuning definitions for limited logic properties (Tool specific
+    // or user specified using `preserve` section in target cluster)
+    limitedLogicRecommendations.foreach { key =>
+      val tuningDefn = baseMap.getOrElseUpdate(key, TuningEntryDefinition(key))
+      tuningDefn.markAsEnable()
+    }
+
     // Add or update tuning definitions for user-enforced properties
     platform.userEnforcedRecommendations.keys.foreach { key =>
       // All user-enforced properties should be enabled and have bootstrap entries.
       val tuningDefn = baseMap.getOrElseUpdate(key, TuningEntryDefinition(key))
-      tuningDefn.setEnabled(true)
-      tuningDefn.setBootstrapEntry(true)
+      tuningDefn.markAsEnable()
     }
     baseMap.toMap
   }
@@ -344,6 +363,17 @@ abstract class AutoTuner(
         recommendations(key) = recommendationVal
       }
     }
+
+    // Add properties with limited logic to the recommendations.
+    // These properties should preserve their values from the source application.
+    limitedLogicRecommendations.foreach { key =>
+      getPropertyValueFromSource(key).foreach { sourceValue =>
+        val recomRecord = recommendations.getOrElseUpdate(key,
+          TuningEntry.build(key, Some(sourceValue), None, finalTuningTable.get(key)))
+        recomRecord.setRecommendedValue(sourceValue)
+      }
+    }
+
     // Add the enforced properties to the recommendations.
     platform.userEnforcedRecommendations.foreach {
       case (key, value) =>
@@ -355,7 +385,24 @@ abstract class AutoTuner(
   }
 
   /**
-   * Append a comment to the list by looking up the persistent comment if any in the tuningEntry
+   * Marks a Spark property as unresolved in the recommendations.
+   *
+   * This function is used when AutoTuner cannot determine a value for a required property
+   * (e.g., executor memory).  This will cause a placeholder ("[FILL_IN_VALUE]") to be shown
+   * in the AutoTuner output. However, if the property is excluded (i.e. not in the final tuning
+   * table), this does nothing.
+   */
+  private def markAsUnresolved(sparkProperty: String, fillInValue: Option[String] = None): Unit = {
+    finalTuningTable.get(sparkProperty).foreach { tuningDef =>
+      val recomRecord = recommendations.getOrElseUpdate(sparkProperty,
+        TuningEntry.build(sparkProperty, getPropertyValueFromSource(sparkProperty),
+          None, Some(tuningDef)))
+      recomRecord.markAsUnresolved(fillInValue)
+    }
+  }
+
+  /**
+   * Append a comment to the list by looking up the missing comment if any in the tuningEntry
    * table.
    * @param key the property set by the autotuner.
    */
@@ -363,7 +410,7 @@ abstract class AutoTuner(
     val missingComment = finalTuningTable.get(key)
       .flatMap(_.getMissingComment())
       .getOrElse(s"was not set.")
-    appendComment(s"'$key' $missingComment")
+    appendComment(key, missingComment)
   }
 
   /**
@@ -373,7 +420,7 @@ abstract class AutoTuner(
   private def appendPersistentComment(key: String): Unit = {
     finalTuningTable.get(key).foreach { eDef =>
       eDef.getPersistentComment().foreach { comment =>
-        appendComment(s"'$key' $comment")
+        appendComment(key, comment)
       }
     }
   }
@@ -386,19 +433,20 @@ abstract class AutoTuner(
   private def appendUpdatedComment(key: String): Unit = {
     finalTuningTable.get(key).foreach { eDef =>
       eDef.getUpdatedComment().foreach { comment =>
-        appendComment(s"'$key' $comment")
+        appendComment(key, comment)
       }
     }
   }
 
   def appendRecommendation(key: String, value: String): Unit = {
-    if (skippedRecommendations.contains(key)) {
-      // do not do anything if the recommendations should be skipped
+    if (skippedRecommendations.contains(key) || limitedLogicRecommendations.contains(key)) {
+      // do not do anything if the recommendations should be skipped or have limited logic
       return
     }
     if (platform.getUserEnforcedSparkProperty(key).isDefined) {
-      // If the property is enforced by the user, the recommendation should be
-      // skipped as we have already added it during the initialization.
+      // If the property is enforced by the user, then
+      // the recommendation should be skipped as we have already handled it during
+      // initRecommendations() and initialization of finalTuningTable.
       return
     }
     // Update the recommendation entry or update the existing one.
@@ -468,9 +516,22 @@ abstract class AutoTuner(
     }
   }
 
-  def calcNumExecutorCores: Int = {
-    val executorCores = platform.recommendedClusterInfo.map(_.coresPerExecutor).getOrElse(1)
-    Math.max(1, executorCores)
+  /**
+   * Returns the label of the multithread read core multiplier property from
+   * the tuning table, if present.
+   * This is used when calculating the number of threads for
+   * 'spark.rapids.sql.multiThreadedRead.numThreads'.
+   */
+  private def getMultithreadReadCoreMultiplierProperty: Option[String] = {
+    val coreMultiplierDefs = finalTuningTable.values
+      .filter(_.getCategoryAsEnum == CategoryEnum.MultiThreadReadCoreMultiplier)
+    // If more than one property is found for the multithread read core multiplier category,
+    // we do not know which one to use. Therefore, raise an error.
+    require(coreMultiplierDefs.size <= 1,
+      s"Only one multithread read core multiplier property is allowed. " +
+        s"Found: ${coreMultiplierDefs.map(_.label).mkString(", ")}")
+
+    coreMultiplierDefs.headOption.map(_.label)
   }
 
   /**
@@ -676,7 +737,15 @@ abstract class AutoTuner(
       // (only for onPrem when offHeapLimit is enabled)
       val hostOffHeapLimitSizeMB = if (!platform.isPlatformCSP &&
         isOffHeapLimitUserEnabled) {
-        executorMemOverhead + sparkOffHeapMemMB
+        val userOffHeapLimitOpt = platform
+          .getUserEnforcedSparkProperty("spark.rapids.memory.host.offHeapLimit.size")
+        if (userOffHeapLimitOpt.isDefined) {
+          StringUtils.convertToMB(
+            userOffHeapLimitOpt.get,
+            Some(ByteUnit.BYTE))
+        } else {
+          executorMemOverhead + sparkOffHeapMemMB
+        }
       } else {
         0L // Not used for CSP platforms or when offHeapLimit is disabled
       }
@@ -757,6 +826,28 @@ abstract class AutoTuner(
   // configuration is like. On prem we don't know so don't set these for now.
   private def configureMultiThreadedReaders(numExecutorCores: Int,
       setMaxBytesInFlight: Boolean): Unit = {
+
+    // Helper function to get the bounded number of threads
+    def getBoundedNumThreads(coreMultiplier: Double): Int = {
+      val numThreads = (numExecutorCores * coreMultiplier).toInt
+      val numThreadsTuningEntry = tuningConfigs.getEntry("MULTITHREAD_READ_NUM_THREADS")
+      val minThreads = numThreadsTuningEntry.getMin.toInt
+      val maxThreads = numThreadsTuningEntry.getMax.toInt
+      val boundedThreads = Math.max(minThreads, Math.min(maxThreads, numThreads))
+      logDebug(s"Bounded numThreads: $boundedThreads " +
+        s"(raw=$numThreads, min=$minThreads, max=$maxThreads)")
+      boundedThreads
+    }
+
+    val coreMultiplierProp =
+      getMultithreadReadCoreMultiplierProperty.flatMap(getPropertyValue).map(_.toDouble)
+    // If a core multiplier is defined in the property, use it to calculate
+    // the number of threads for multithreaded reads.
+    if (coreMultiplierProp.isDefined && !platform.isPlatformCSP) {
+      appendRecommendation("spark.rapids.sql.multiThreadedRead.numThreads",
+        getBoundedNumThreads(coreMultiplierProp.get))
+      return
+    }
     if (numExecutorCores < 4) {
       appendRecommendation("spark.rapids.sql.multiThreadedRead.numThreads",
         Math.max(20, numExecutorCores))
@@ -778,10 +869,12 @@ abstract class AutoTuner(
       appendRecommendation("spark.rapids.sql.format.parquet.multithreaded.combine.waitTime",
         tuningConfigs.getEntry("READER_MULTITHREADED_COMBINE_WAIT_TIME").getDefault)
     } else {
-      val numThreads = numExecutorCores * tuningConfigs
-        .getEntry("MULTITHREAD_READ_CORE_MULTIPLIER").getDefault.toInt
+      // For 20+ cores, use the core multiplier defined in tuning configs
+      // to calculate the number of threads for multithreaded reads.
+      val coreMultiplier =
+        tuningConfigs.getEntry("MULTITHREAD_READ_CORE_MULTIPLIER").getDefault.toDouble
       appendRecommendation("spark.rapids.sql.multiThreadedRead.numThreads",
-        Math.max(tuningConfigs.getEntry("MULTITHREAD_READ_NUM_THREADS").getMax.toInt, numThreads))
+        getBoundedNumThreads(coreMultiplier))
       if (platform.isPlatformCSP) {
         if (setMaxBytesInFlight) {
           appendRecommendationForMemoryMB("spark.rapids.shuffle.multiThreaded.maxBytesInFlight",
@@ -852,25 +945,21 @@ abstract class AutoTuner(
           case Left(notEnoughMemComment) =>
             // Not enough memory available, add warning comments
             appendComment(notEnoughMemComment)
-            appendComment("spark.rapids.memory.pinnedPool.size",
-              notEnoughMemCommentForKey(
-                "spark.rapids.memory.pinnedPool.size"))
-            if (sparkMaster.contains(Yarn) || sparkMaster.contains(Kubernetes)) {
-              appendComment("spark.executor.memoryOverhead",
-                notEnoughMemCommentForKey(
-                  "spark.executor.memoryOverhead"))
+            // Helper function to append not enough memory comment for a specific key
+            def appendCommentForNotEnoughMem(key: String): Unit = {
+              appendComment(key, notEnoughMemCommentForKey(key), prependKey = false)
+              // Mark the recommendation as unresolved since AutoTuner could not recommend a value
+              markAsUnresolved(key)
             }
-            appendComment("spark.executor.memory",
-              notEnoughMemCommentForKey(
-                "spark.executor.memory"))
+            appendCommentForNotEnoughMem("spark.rapids.memory.pinnedPool.size")
+            if (sparkMaster.contains(Yarn) || sparkMaster.contains(Kubernetes)) {
+              appendCommentForNotEnoughMem("spark.executor.memoryOverhead")
+            }
+            appendCommentForNotEnoughMem("spark.executor.memory")
             // Skip off-heap related comments when offHeapLimit is enabled
             if (!platform.isPlatformCSP && isOffHeapLimitUserEnabled) {
-              appendComment("spark.memory.offHeap.size",
-                notEnoughMemCommentForKey(
-                  "spark.memory.offHeap.size"))
-              appendComment("spark.rapids.memory.host.offHeapLimit.size",
-                notEnoughMemCommentForKey(
-                  "spark.rapids.memory.host.offHeapLimit.size"))
+              appendCommentForNotEnoughMem("spark.memory.offHeap.size")
+              appendCommentForNotEnoughMem("spark.rapids.memory.host.offHeapLimit.size")
             }
             false
         }
@@ -895,13 +984,18 @@ abstract class AutoTuner(
   def calculateJobLevelRecommendations(): Unit = {
     // TODO - do we do anything with 200 shuffle partitions or maybe if its close
     // set the Spark config  spark.shuffle.sort.bypassMergeThreshold
-    getShuffleManagerClassName match {
-      case Right(smClassName) => appendRecommendation("spark.shuffle.manager", smClassName)
-      case Left(comment) => appendComment("spark.shuffle.manager", comment)
+    if (platform.getUserEnforcedSparkProperty("spark.shuffle.manager").isEmpty) {
+      // Process shuffle manager only if not user-enforced
+      getShuffleManagerClassName match {
+        case Right(smClassName) => appendRecommendation("spark.shuffle.manager", smClassName)
+        case Left(comment) => appendComment("spark.shuffle.manager", comment, prependKey = false)
+      }
     }
     appendComment(classPathComments("rapids.shuffle.jars"))
     recommendFileCache()
     recommendMaxPartitionBytes()
+    // Recommend shuffle partitions here.
+    // Note that this may get overridden if AQE is enabled.
     recommendShufflePartitions()
     recommendKryoSerializerSetting()
     recommendGCProperty()
@@ -971,10 +1065,10 @@ abstract class AutoTuner(
     }
   }
 
-  private def recommendAQEProperties(): Unit = {
+  protected def recommendAQEProperties(): Unit = {
     // Spark configuration (AQE is enabled by default)
     val aqeEnabled = getPropertyValue("spark.sql.adaptive.enabled")
-      .getOrElse("false").toLowerCase
+      .getOrElse("true").toLowerCase
     if (aqeEnabled == "false") {
       // TODO: Should we recommend enabling AQE if not set?
       appendComment(commentsForMissingProps("spark.sql.adaptive.enabled"))
@@ -1025,8 +1119,7 @@ abstract class AutoTuner(
       platform.recommendedGpuDevice.getAdvisoryPartitionSizeInBytes.foreach { size =>
         appendRecommendation("spark.sql.adaptive.advisoryPartitionSizeInBytes", size)
       }
-      val initialPartitionNumValue = getInitialPartitionNumValue.map(_.toInt)
-      if (initialPartitionNumValue.getOrElse(0) <=
+      if (shufflePartitionValue <=
             tuningConfigs.getEntry("AQE_MIN_INITIAL_PARTITION_NUM").getDefault.toInt) {
         recInitialPartitionNum = platform.recommendedGpuDevice.getInitialPartitionNum.getOrElse(0)
       }
@@ -1034,26 +1127,55 @@ abstract class AutoTuner(
         tuningConfigs.getEntry("AQE_COALESCE_PARALLELISM_FIRST").getDefault)
     }
 
-    val recShufflePartitions = recommendations.get("spark.sql.shuffle.partitions")
-      .map(_.getTuneValue().toInt)
-
-    // scalastyle:off line.size.limit
-    // Determine whether to recommend initialPartitionNum based on shuffle partitions recommendation
-    recShufflePartitions match {
-      case Some(shufflePartitions) if shufflePartitions >= recInitialPartitionNum =>
-        // Skip recommending 'initialPartitionNum' when:
-        // - AutoTuner has already recommended 'spark.sql.shuffle.partitions' AND
-        // - The recommended shuffle partitions value is sufficient (>= recInitialPartitionNum)
-        // This is because AQE will use the recommended 'spark.sql.shuffle.partitions' by default.
-        // Reference: https://spark.apache.org/docs/latest/sql-performance-tuning.html#coalescing-post-shuffle-partitions
-      case _ =>
-        // Set 'initialPartitionNum' when either:
-        // - AutoTuner has not recommended 'spark.sql.shuffle.partitions' OR
-        // - Recommended shuffle partitions is small (< recInitialPartitionNum)
-        appendRecommendation(getInitialPartitionNumProperty, recInitialPartitionNum)
-        appendRecommendation("spark.sql.shuffle.partitions", recInitialPartitionNum)
+    // Update the recommended shuffle partitions (both AQE initial partition number
+    // and shuffle partitions) based on the AQE recommendations and ColumnarExchange data size
+    val isSkipped = applyToAllPartitionProperties[Boolean](skippedRecommendations.contains(_))
+      .exists(identity)
+    if (!isSkipped) {
+      var finalPartitionValue = Math.max(shufflePartitionValue, recInitialPartitionNum)
+      // Adjust based on ColumnarExchange data size if available
+      aqePartitionProperty.foreach { initialPartitionNumKey =>
+        appInfoProvider.getMaxColumnarExchangeDataSizeBytes match {
+          case Some(maxDataSize) =>
+            // Get GPU batch size (use actual value if set, otherwise use default)
+            val gpuBatchSize: Long = getPropertyValue("spark.rapids.sql.batchSizeBytes") match {
+              case Some(value) =>
+                // Parse the actual batch size value (could be with units like "2g", "1GB", etc.)
+                StringUtils.convertMemorySizeToBytes(value, Some(ByteUnit.BYTE))
+              case None =>
+                // Use default batch size from tuning configs
+                tuningConfigs.getEntry("BATCH_SIZE_BYTES").getDefaultAsMemory(ByteUnit.BYTE)
+            }
+            // Calculate ratio
+            val ratio = (maxDataSize.toDouble / gpuBatchSize).ceil.toInt
+            // Take the smaller value as the recommended value
+            val columnarExchangeAdjustedValue = math.min(shufflePartitionValue, ratio)
+            // Use the ColumnarExchange-adjusted value if it's different
+            if (columnarExchangeAdjustedValue != shufflePartitionValue) {
+              finalPartitionValue = Math.min(shufflePartitionValue, columnarExchangeAdjustedValue)
+              appendComment(s"'$initialPartitionNumKey' adjusted from " +
+                s"$shufflePartitionValue to $columnarExchangeAdjustedValue based on " +
+                s"ColumnarExchange data size (${maxDataSize} bytes) and " +
+                s"GPU batch size (${gpuBatchSize} bytes)")
+            }
+          case None =>
+            // No ColumnarExchange data size metrics found, use original logic
+        }
+      }
+      aqePartitionProperty.foreach(appendRecommendation(_, finalPartitionValue))
+      appendRecommendation("spark.sql.shuffle.partitions", finalPartitionValue)
     }
-    // scalastyle:on line.size.limit
+
+    // Handle Databricks-specific AQE auto shuffle
+    if (platform.isInstanceOf[DatabricksPlatform]) {
+      val aqeAutoShuffle = getPropertyValue("spark.databricks.adaptive.autoOptimizeShuffle.enabled")
+      if (aqeAutoShuffle.isDefined) {
+        // If the user has enabled AQE auto shuffle, override with the default
+        // recommendation for that property.
+        appendRecommendation("spark.databricks.adaptive.autoOptimizeShuffle.enabled",
+          tuningConfigs.getEntry("DATABRICKS_AUTO_OPTIMIZE_SHUFFLE_ENABLED").getDefault)
+      }
+    }
 
     // TODO - can we set spark.sql.autoBroadcastJoinThreshold ???
     val autoBroadcastJoinKey = "spark.sql.adaptive.autoBroadcastJoinThreshold"
@@ -1061,8 +1183,11 @@ abstract class AutoTuner(
       getPropertyValue(autoBroadcastJoinKey).map(StringUtils.convertToMB(_, Some(ByteUnit.BYTE)))
     val autoBroadcastJoinThresholdDefaultMB =
       tuningConfigs.getEntry("AQE_AUTO_BROADCAST_JOIN_THRESHOLD").getDefaultAsMemory(ByteUnit.MiB)
+    // If the property is not set, append a missing comment and mark it
+    // as unresolved so the user knows to look at it.
     if (autoBroadcastJoinThresholdPropertyMB.isEmpty) {
-      appendComment(autoBroadcastJoinKey, s"'$autoBroadcastJoinKey' was not set.")
+      appendMissingComment(autoBroadcastJoinKey)
+      markAsUnresolved(autoBroadcastJoinKey)
     } else if (autoBroadcastJoinThresholdPropertyMB.get > autoBroadcastJoinThresholdDefaultMB) {
       appendComment(s"Setting '$autoBroadcastJoinKey' > ${autoBroadcastJoinThresholdDefaultMB}m" +
         s" could lead to performance\n" +
@@ -1218,50 +1343,53 @@ abstract class AutoTuner(
    * Internal method to recommend 'spark.sql.shuffle.partitions' based on spills and skew.
    * This method can be overridden by Profiling/Qualification AutoTuners to provide custom logic.
    */
-  protected def recommendShufflePartitionsInternal(inputShufflePartitions: Int): Int = {
-    var shufflePartitions = inputShufflePartitions
-    val lookup = "spark.sql.shuffle.partitions"
+  protected def recommendShufflePartitionsInternal(): Int = {
+    var inputShufflePartitions = shufflePartitionValue
     val shuffleStagesWithPosSpilling = appInfoProvider.getShuffleStagesWithPosSpilling
     if (shuffleStagesWithPosSpilling.nonEmpty) {
       val shuffleSkewStages = appInfoProvider.getShuffleSkewStages
       if (shuffleSkewStages.exists(id => shuffleStagesWithPosSpilling.contains(id))) {
-        appendOptionalComment(lookup,
+        appendComment(
           "Shuffle skew exists (when task's Shuffle Read Size > 3 * Avg Stage-level size) in\n" +
             s"  stages with spilling. Increasing shuffle partitions is not recommended in this\n" +
             s"  case since keys will still hash to the same task.")
       } else {
-        shufflePartitions *=
+        inputShufflePartitions *=
           tuningConfigs.getEntry("SHUFFLE_PARTITION_MULTIPLIER").getDefault.toInt
         // Could be memory instead of partitions
-        appendOptionalComment(lookup,
-          s"'$lookup' should be increased since spilling occurred in shuffle stages.")
+        appendComment(shufflePartitionsCommentForSpilling)
       }
     }
-    shufflePartitions
+    inputShufflePartitions
   }
 
   /**
-   * Recommendations for 'spark.sql.shuffle.partitions' based on spills and skew in shuffle stages.
-   * Note that the logic can be disabled by adding the property to "limitedLogicRecommendations"
-   * which is one of the arguments of [[getRecommendedProperties]].
+   * Coordinates recommendations for partition-related properties to ensure
+   * they are properly aligned.
+   *
+   * This method determines the appropriate partition property to set based on:
+   * - AQE initial partition requirements
+   * - Shuffle spills and skew requirements
+   * - Whether AQE coalescing is enabled
+   *
+   * Uses a unified approach to determine which property should be set rather than
+   * setting multiple conflicting properties.
    */
   private def recommendShufflePartitions(): Unit = {
-    val lookup = "spark.sql.shuffle.partitions"
-    var shufflePartitions = getPropertyValue(lookup).getOrElse(
-      tuningConfigs.getEntry("SHUFFLE_PARTITIONS").getDefault).toInt
-
-    // TODO: Need to look at other metrics for GPU spills (DEBUG mode), and batch sizes metric
-    if (isCalculationEnabled(lookup)) {
-      shufflePartitions = recommendShufflePartitionsInternal(shufflePartitions)
+    val isSkipped = applyToAllPartitionProperties[Boolean](skippedRecommendations.contains(_))
+      .exists(identity)
+    if (!isSkipped) {
+      // Apply shuffle-specific logic (spills, skew) if calculation is enabled
+      // on all partition properties (i.e. spark.sql.shuffle.partitions and AQE initial partition)
+      val isCalcEnabled = applyToAllPartitionProperties[Boolean](isCalculationEnabled(_))
+        .forall(identity)
+      val recommendedShufflePartitions = if (isCalcEnabled) {
+        recommendShufflePartitionsInternal()
+      } else {
+        shufflePartitionValue
+      }
+      appendRecommendation("spark.sql.shuffle.partitions", recommendedShufflePartitions)
     }
-    val aqeAutoShuffle = getPropertyValue("spark.databricks.adaptive.autoOptimizeShuffle.enabled")
-    if (aqeAutoShuffle.isDefined) {
-      // If the user has enabled AQE auto shuffle, override with the default
-      // recommendation for that property.
-      appendRecommendation("spark.databricks.adaptive.autoOptimizeShuffle.enabled",
-        tuningConfigs.getEntry("DATABRICKS_AUTO_OPTIMIZE_SHUFFLE_ENABLED").getDefault)
-    }
-    appendRecommendation("spark.sql.shuffle.partitions", s"$shufflePartitions")
   }
 
   /**
@@ -1377,18 +1505,19 @@ abstract class AutoTuner(
   }
 
   /**
-   * Adds a comment for a configuration key when AutoTuner cannot provide a recommended value,
-   * but the configuration is necessary.
+   * Adds a comment for a configuration key.
    */
   private def appendComment(
       key: String,
       comment: String,
-      fillInValue: Option[String] = None): Unit = {
+      prependKey: Boolean = true): Unit = {
     if (!skippedRecommendations.contains(key)) {
-      val recomRecord = recommendations.getOrElseUpdate(key,
-        TuningEntry.build(key, getPropertyValueFromSource(key), None, finalTuningTable.get(key)))
-      recomRecord.markAsUnresolved(fillInValue)
-      comments += comment
+      val finalComment = if (prependKey) {
+        s"'$key' $comment"
+      } else {
+        comment
+      }
+      appendComment(finalComment)
     }
   }
 
@@ -1453,8 +1582,27 @@ abstract class AutoTuner(
       (Seq[TuningEntryTrait], Seq[RecommendedCommentResult]) = {
     if (appInfoProvider.isAppInfoAvailable) {
       limitedLogicList.foreach(limitedSeq => limitedLogicRecommendations ++= limitedSeq)
+      platform.targetCluster.foreach { cluster =>
+        cluster.getSparkProperties.preservePropertiesSet.foreach { property =>
+          getPropertyValueFromSource(property) match {
+            case Some(_) =>
+              // If the property is found in the source properties, add a comment and
+              // add the property to the limited logic recommendations.
+              appendComment(getPreservedPropertyComment(property))
+              limitedLogicRecommendations += property
+            case None =>
+              appendComment(getPreservedPropertyNotFoundComment(property))
+          }
+        }
+      }
       skipList.foreach(skipSeq => skippedRecommendations ++= skipSeq)
       skippedRecommendations ++= platform.recommendationsToExclude
+      platform.targetCluster.foreach { cluster =>
+        cluster.getSparkProperties.excludePropertiesSet.foreach { property =>
+          appendComment(getExcludedPropertyComment(property))
+          skippedRecommendations += property
+        }
+      }
       initRecommendations()
       // configured GPU recommended instance type NEEDS to happen before any of the other
       // recommendations as they are based on
@@ -1500,28 +1648,62 @@ abstract class AutoTuner(
     }
   }
 
-  /**
-   * Gets the initial partition number property key.
-   * @return the property key to use for initial partition number
-   */
-  private def getInitialPartitionNumProperty: String = {
-    val maxNumPostShufflePartitions = "spark.sql.adaptive.maxNumPostShufflePartitions"
-    val initialPartitionNumKey = "spark.sql.adaptive.coalescePartitions.initialPartitionNum"
-    // check if maxNumPostShufflePartitions is in final tuning table
-    if (finalTuningTable.contains(maxNumPostShufflePartitions)) {
-      maxNumPostShufflePartitions
+  protected lazy val aqePartitionProperty: Option[String] = {
+    val aqeEnabled = getPropertyValue("spark.sql.adaptive.enabled")
+      .getOrElse("true").toLowerCase == "true" // enabled by default in Spark
+    val coalesceEnabled = getPropertyValue("spark.sql.adaptive.coalescePartitions.enabled")
+      .getOrElse("true").toLowerCase == "true" // enabled by default when AQE is enabled
+
+    if (aqeEnabled && coalesceEnabled) {
+      val maxNumPostShufflePartitions = "spark.sql.adaptive.maxNumPostShufflePartitions"
+      val initialPartitionNumKey = "spark.sql.adaptive.coalescePartitions.initialPartitionNum"
+      // check if maxNumPostShufflePartitions is in final tuning table
+      if (finalTuningTable.contains(maxNumPostShufflePartitions)) {
+        Some(maxNumPostShufflePartitions)
+      } else {
+        Some(initialPartitionNumKey)
+      }
     } else {
-      initialPartitionNumKey
+      None
     }
   }
 
   /**
-   * Gets the initial partition number value using the appropriate property key.
-   * @return the initial partition number value if found
+   * Applies a function to all relevant shuffle partition property keys, based on AQE and
+   * coalescing settings.
+   *
+   * Logic:
+   *   - If AQE and coalescing are enabled, the relevant property is either
+   *     'spark.sql.adaptive.maxNumPostShufflePartitions' or
+   *     'spark.sql.adaptive.coalescePartitions.initialPartitionNum', depending on which is present
+   *     in the final tuning table.
+   *   - In all cases, 'spark.sql.shuffle.partitions' is also included as a relevant property.
+   *
+   * @param fn Function to apply to each selected property key.
+   * @tparam T Return type of the function.
+   * @return A sequence of results, one for each relevant property key.
    */
-  private def getInitialPartitionNumValue: Option[String] = {
-    val propertyKey = getInitialPartitionNumProperty
-    getPropertyValue(propertyKey)
+  protected def applyToAllPartitionProperties[T](fn: String => T): Seq[T] = {
+    (aqePartitionProperty.toSeq :+ "spark.sql.shuffle.partitions").map(fn)
+  }
+
+  /**
+   * Returns the shuffle partition value using the following logic:
+   * - Considers all relevant partition properties (AQE initial partition properties and
+   *   'spark.sql.shuffle.partitions').
+   * - For each property, checks if a value is set (either in the event log or in recommendations).
+   * - If multiple properties have values, returns the maximum value among them.
+   * - If none are set, returns the default value from tuningConfigs.
+   *
+   * Note: This is a method (not a lazy val) to always reflect the latest value,
+   * as recommendations may be updated after initial evaluation.
+   */
+  protected def shufflePartitionValue: Int = {
+    // Gather all relevant partition property values, take the maximum if multiple are set
+    applyToAllPartitionProperties[Option[Int]](prop => getPropertyValue(prop).map(_.toInt))
+      .flatten
+      .reduceOption(_ max _)
+      .getOrElse(tuningConfigs.getEntry("SHUFFLE_PARTITIONS").getDefault.toInt)
   }
 
   /**
@@ -1568,7 +1750,7 @@ abstract class AutoTuner(
 
   /**
    * Calculate recommended pinned memory size using the new formula:
-   * min (2 * spark executor cores * GPU batch size, 1/4 * host.offHeapLimit.Size)
+   * pinned pool-offHeap ratio * host.offHeapLimit.Size for onPrem platform.
    *
    * Note: This new formula is only used for onPrem platform.
    * For CSP platforms, the original calculation is used.
@@ -1691,17 +1873,13 @@ class ProfilingAutoTuner(
    * This method checks for task OOM errors in shuffle stages and recommends to increase
    * shuffle partitions if task OOM errors occurred.
    */
-  override def recommendShufflePartitionsInternal(inputShufflePartitions: Int): Int = {
-    val calculatedValue = super.recommendShufflePartitionsInternal(inputShufflePartitions)
-    val lookup = "spark.sql.shuffle.partitions"
-    val currentValue = getPropertyValue(lookup).getOrElse(
-      tuningConfigs.getEntry("SHUFFLE_PARTITIONS").getDefault).toInt
+  override def recommendShufflePartitionsInternal(): Int = {
+    val calculatedValue = super.recommendShufflePartitionsInternal()
     if (appInfoProvider.hasShuffleStagesWithOom) {
       // Shuffle Stages with Task OOM detected. We may want to increase shuffle partitions.
-      val recShufflePartitions = currentValue *
+      val recShufflePartitions = shufflePartitionValue *
         tuningConfigs.getEntry("SHUFFLE_PARTITION_MULTIPLIER").getDefault.toInt
-      appendOptionalComment(lookup,
-        s"'$lookup' should be increased since task OOM occurred in shuffle stages.")
+      appendComment(shufflePartitionsCommentForGpuOOM)
       math.max(calculatedValue, recShufflePartitions)
     } else {
       // Else, return the calculated value from the parent implementation
@@ -1716,6 +1894,7 @@ class ProfilingAutoTuner(
   override def recommendPluginPropsInternal(): Unit = {
     recommendClassNameProperty("spark.plugins", autoTunerHelper.rapidsPluginClassName)
   }
+
 }
 
 /**
@@ -1875,7 +2054,20 @@ trait AutoTunerStaticComments {
   // scalastyle:on line.size.limit
 
   def shuffleManagerCommentForMissingVersion: String = {
-    "Could not recommend RapidsShuffleManager as Spark version cannot be determined."
+    "'spark.shuffle.manager' is not recommended as Spark version cannot be determined."
+  }
+
+  def shuffleManagerCommentForQualification: String = {
+    "'spark.shuffle.manager' is not recommended because the Spark version on the " +
+      "GPU cluster is unknown during Qualification."
+  }
+
+  def shufflePartitionsCommentForSpilling: String = {
+    "Shuffle partitions should be increased since spilling occurred in shuffle stages."
+  }
+
+  def shufflePartitionsCommentForGpuOOM: String = {
+    "Shuffle partitions should be increased since task OOM occurred in shuffle stages."
   }
 
   /**
@@ -1927,6 +2119,34 @@ trait AutoTunerStaticComments {
    */
   def getEnforcedPropertyComment(key: String): String = {
     s"'$key' was user-enforced in the target cluster properties."
+  }
+
+  /**
+   * Append a comment to the list indicating that the property was preserved from source.
+   * @param key the property preserved from source.
+   */
+  def getPreservedPropertyComment(key: String): String = {
+    s"'$key' was preserved from source application properties as specified in target cluster."
+  }
+
+  /**
+   * Append a comment to the list indicating that the property was specified in preserve list
+   * but not found in source properties.
+   * @param key the property specified in preserve list but not found in source.
+   */
+  def getPreservedPropertyNotFoundComment(key: String): String = {
+    s"""
+    |'$key' was specified in preserve list but not found in source properties.
+    |AutoTuner will continue with its recommendation for this property.
+    |""".stripMargin.trim.replaceAll("\n", "\n  ")
+  }
+
+  /**
+   * Append a comment to the list indicating that the property was excluded from source.
+   * @param key the property excluded from source.
+   */
+  def getExcludedPropertyComment(key: String): String = {
+    s"'$key' was excluded from tuning recommendations as specified in target cluster."
   }
 
   def commentForExperimentalConfig(config: String): String = {

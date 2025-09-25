@@ -1321,7 +1321,24 @@ reportDefinitions:
             dataType: String
             description: >-
               TBD
+          - name: compressionOption
+            dataType: String
+            description: >-
+              Contains the compression codec used if any. The compression is defined as one of the options.
+              If no compression codec is used, the value is "uncompressed".
+              This field can be used as a clue to determine the reason a write Op is not supported.
           - name: fullDescription
             dataType: String
             description: >-
               TBD
+      # ProfileLog
+      - label: appRawSummaryLog
+        description: >-
+          This file contains a summary of the raw analysis performed by the tool.
+          Within the Profiling tool context, it recommend settings for the application assuming that
+          the job will be able to use all the cluster resources (CPU and GPU) when it’s running.
+          The Profiling tool optionally provides optimized RAPIDS configurations based on the target
+          cluster’s information.
+        fileName: profile.log
+        fileFormat: TXT
+        scope: per-app
